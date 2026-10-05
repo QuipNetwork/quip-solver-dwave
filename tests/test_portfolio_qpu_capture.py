@@ -250,3 +250,69 @@ def test_the_recorded_chain_strength_is_the_chain_coupling_the_child_sampler_rec
     ).resolve()
     chain = next(c for c in embedding.values() if len(c) > 1)
     assert capture.chain_strength_for(qdict, embedding) == pytest.approx(-received[0].quadratic[chain[0], chain[1]])
+
+
+def test_a_job_without_a_prefactor_keeps_production_s_and_its_file_names(tmp_path):
+    job = {"name": "draw000-real", "anneal_us": 80}
+    assert capture.job_prefactor(job) == capture.CHAIN_STRENGTH_PREFACTOR
+    default = {**job, "chain_strength_prefactor": capture.CHAIN_STRENGTH_PREFACTOR}
+    assert capture._output_paths(tmp_path, job) == capture._output_paths(tmp_path, default)
+    assert capture._output_paths(tmp_path, job)[0].name == "draw000-real-80us.npz"
+    assert capture._output_paths(tmp_path, {**job, "chain_strength_prefactor": 4.5})[0].name == (
+        "draw000-real-80us-p4.5.npz")
+
+
+def test_the_default_prefactor_keeps_the_capture_keys_of_a_manifest_built_before_the_option(tmp_path, monkeypatch):
+    args = _round(tmp_path, monkeypatch)
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    for job in manifest["jobs"]:
+        assert job["chain_strength_prefactor"] == capture.CHAIN_STRENGTH_PREFACTOR
+        assert job["capture_key"] == hashlib.sha256(json.dumps({
+            "name": job["name"], "model_hash": job["model_hash"], "anneal_us": job["anneal_us"],
+            "reads": job["reads"], "clique_hash": job["clique_hash"], "solver": "Advantage2_system1",
+            "prefactor": 3.0,
+        }, sort_keys=True).encode()).hexdigest()
+
+
+def test_every_prefactor_adds_a_job_and_reaches_the_sampler(tmp_path, monkeypatch):
+    args = _round(tmp_path, monkeypatch)
+    base = json.loads(args.manifest.read_text(encoding="utf-8"))
+    manifest_path = tmp_path / "manifest-chains.json"
+    capture.main([
+        "manifest", "--families", str(tmp_path / "families"), "--cliques", str(args.cliques), "--spec", "unused",
+        "--properties", str(tmp_path / "properties.json"), "--draws", "draw000", "--variants", "real", "iid",
+        "--anneal-us", "20", "80", "--reads", "8", "--prefactor", "4.5", "6", "--out", str(manifest_path),
+    ])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["chain_strength_prefactors"] == [4.5, 6.0]
+    assert len(manifest["jobs"]) == 2 * len(base["jobs"])
+    assert len({job["capture_key"] for job in manifest["jobs"]} | {job["capture_key"] for job in base["jobs"]}) == (
+        3 * len(base["jobs"]))
+    approval = tmp_path / "approval-chains.json"
+    approval.write_text(json.dumps({
+        "manifest_hash": hashlib.sha256(manifest_path.read_bytes()).hexdigest(), "cap_seconds": 1.0,
+    }), encoding="utf-8")
+    received = []
+    original = FakeLiveSampler.sample_qubo
+
+    def spy(self, qdict, **kwargs):
+        received.append(kwargs["prefactor"])
+        return original(self, qdict, **kwargs)
+
+    monkeypatch.setattr(FakeLiveSampler, "sample_qubo", spy)
+    monkeypatch.setattr(capture, "LiveCliqueSampler", FakeLiveSampler)
+    paid = argparse.Namespace(manifest=manifest_path, approval=approval, round_dir=tmp_path / "chains",
+                              yes=True, mock=False)
+    assert capture.cmd_capture(paid) == 0
+    assert sorted(received) == sorted(job["chain_strength_prefactor"] for job in manifest["jobs"])
+    for job in manifest["jobs"]:
+        meta = json.loads(capture._output_paths(paid.round_dir, job)[1].read_text(encoding="utf-8"))
+        assert meta["job"]["chain_strength_prefactor"] == job["chain_strength_prefactor"]
+
+
+def test_the_recorded_chain_strength_scales_with_the_prefactor():
+    q = np.triu(np.random.default_rng(6).normal(size=(12, 12)))
+    qdict = capture.production_qubo_dict(q)
+    embedding = capture.embedding_for(SmallCliqueSampler(), qdict)
+    assert capture.chain_strength_for(qdict, embedding, 6.0) == pytest.approx(
+        2.0 * capture.chain_strength_for(qdict, embedding))

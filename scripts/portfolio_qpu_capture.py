@@ -5,6 +5,8 @@ backend's select QUBO, at 500 reads, a uniform-torque-compensation chain
 strength with prefactor 3.0, and no spin-reversal transforms. This script makes
 that same call on the family models, at several anneal times, and saves every
 read with its chain-break fraction and the access time D-Wave charged.
+``manifest --prefactor`` sets other chain-strength prefactors for a chain test;
+each job records its own, and a job without one uses production's 3.0.
 
 The clique sampler places its own embedding. Before the first submission, and
 again for every job, this script recomputes that embedding and refuses to spend
@@ -23,6 +25,7 @@ import argparse
 import fcntl
 import hashlib
 import importlib.util
+import itertools
 import json
 import random
 import sys
@@ -82,6 +85,11 @@ def sha256_file(path: Path | str) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def job_prefactor(job: dict[str, Any]) -> float:
+    """The job's chain-strength prefactor; jobs from manifests that predate the option used production's."""
+    return float(job.get("chain_strength_prefactor", CHAIN_STRENGTH_PREFACTOR))
+
+
 def chain_set(chains: Iterable[Sequence[int]]) -> frozenset[frozenset[int]]:
     return frozenset(frozenset(int(q) for q in chain) for chain in chains)
 
@@ -106,12 +114,12 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             qubits = sum(len(chain) for chain in clique["chains"])
             model_hash = sha256_file(args.families / record["arrays_file"])
             clique_hash = sha256_file(clique_path)
-            for anneal_us in args.anneal_us:
+            for anneal_us, prefactor in itertools.product(args.anneal_us, args.prefactor):
                 estimate_us = capture_tools.estimate_access_us(properties, qubits, args.reads, anneal_us)
                 capture_key = hashlib.sha256(json.dumps({
                     "name": name, "model_hash": model_hash, "anneal_us": anneal_us, "reads": args.reads,
                     "clique_hash": clique_hash,
-                    "solver": args.solver, "prefactor": CHAIN_STRENGTH_PREFACTOR,
+                    "solver": args.solver, "prefactor": prefactor,
                 }, sort_keys=True).encode()).hexdigest()
                 jobs.append({
                     "name": name, "arrays_file": record["arrays_file"], "draw": draw, "variant": variant,
@@ -120,6 +128,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
                     "anneal_us": int(anneal_us), "reads": args.reads, "num_qubits": qubits,
                     "clique_file": str(clique_path), "clique_hash": clique_hash, "estimate_us": estimate_us,
                     "reservation_us": estimate_us * args.margin, "capture_key": capture_key,
+                    "chain_strength_prefactor": prefactor,
                 })
     keys = [job["capture_key"] for job in jobs]
     if len(set(keys)) != len(keys):
@@ -128,7 +137,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
     random.Random(args.order_seed).shuffle(order)
     return {
         "schema": "portfolio-qpu-capture-v1", "created_at": datetime.now(UTC).isoformat(),
-        "solver": args.solver, "label": LABEL, "chain_strength_prefactor": CHAIN_STRENGTH_PREFACTOR,
+        "solver": args.solver, "label": LABEL, "chain_strength_prefactors": list(args.prefactor),
         "capture_script_sha256": sha256_file(SCRIPT_PATH),
         "families": str(args.families), "families_index_sha256": sha256_file(args.families / "index.json"),
         "spec_path": str(args.spec), "properties_path": str(args.properties),
@@ -193,11 +202,11 @@ class LiveCliqueSampler:
     def target_graph(self):
         return self._sampler.target_graph
 
-    def sample_qubo(self, qdict: QuboDict, **kwargs: Any):
+    def sample_qubo(self, qdict: QuboDict, *, prefactor: float, **kwargs: Any):
         from dwave.embedding.chain_strength import uniform_torque_compensation
 
         sampleset = self._sampler.sample_qubo(
-            qdict, chain_strength=partial(uniform_torque_compensation, prefactor=CHAIN_STRENGTH_PREFACTOR),
+            qdict, chain_strength=partial(uniform_torque_compensation, prefactor=prefactor),
             label=LABEL, **kwargs,
         )
         sampleset.resolve()
@@ -207,7 +216,8 @@ class LiveCliqueSampler:
         self._sampler.close()
 
 
-def chain_strength_for(qdict: QuboDict, embedding: dict[int, list[int]]) -> float:
+def chain_strength_for(qdict: QuboDict, embedding: dict[int, list[int]],
+                       prefactor: float = CHAIN_STRENGTH_PREFACTOR) -> float:
     """The chain strength ``DWaveCliqueSampler`` passes down, which its sample set does not report.
 
     The clique sampler converts the QUBO to spin form, then ``FixedEmbeddingComposite`` calls the
@@ -217,7 +227,7 @@ def chain_strength_for(qdict: QuboDict, embedding: dict[int, list[int]]) -> floa
     from dwave.embedding.chain_strength import uniform_torque_compensation
 
     spin = dimod.BinaryQuadraticModel.from_qubo(qdict).change_vartype(dimod.SPIN, inplace=False)
-    return float(uniform_torque_compensation(spin, embedding, prefactor=CHAIN_STRENGTH_PREFACTOR))
+    return float(uniform_torque_compensation(spin, embedding, prefactor=prefactor))
 
 
 def embedding_for(sampler: Any, qdict: QuboDict) -> dict[int, list[int]]:
@@ -237,8 +247,11 @@ def embedding_for(sampler: Any, qdict: QuboDict) -> dict[int, list[int]]:
 
 
 def _output_paths(round_dir: Path, job: dict[str, Any]) -> tuple[Path, Path]:
-    stem = round_dir / "jobs" / f"{job['name']}-{job['anneal_us']}us"
-    return stem.with_suffix(".npz"), stem.with_suffix(".json")
+    stem = f"{job['name']}-{job['anneal_us']}us"
+    if job_prefactor(job) != CHAIN_STRENGTH_PREFACTOR:
+        stem += f"-p{job_prefactor(job):g}"
+    jobs = round_dir / "jobs"
+    return jobs / f"{stem}.npz", jobs / f"{stem}.json"
 
 
 def _saved(round_dir: Path, job: dict[str, Any]) -> bool:
@@ -313,7 +326,7 @@ def run_capture(args: argparse.Namespace) -> int:
             started = time.perf_counter()
             try:
                 sampleset, info = sampler.sample_qubo(
-                    qdict, num_reads=job["reads"], annealing_time=job["anneal_us"])
+                    qdict, num_reads=job["reads"], annealing_time=job["anneal_us"], prefactor=job_prefactor(job))
             except BaseException as exc:
                 if not args.mock:
                     capture_tools.record_failed(round_dir, key, f"{type(exc).__name__}: {exc}")
@@ -346,7 +359,7 @@ def run_capture(args: argparse.Namespace) -> int:
                 "submitted_at": submitted_at, "wall_s": wall_s, "qpu_access_time_us": access_us,
                 "charge_known": charge_known,
                 "timing": info.get("timing", {}), "problem_id": info.get("problem_id"),
-                "chain_strength": chain_strength_for(qdict, embedding),
+                "chain_strength": chain_strength_for(qdict, embedding, job_prefactor(job)),
                 "embedding": {str(v): chain for v, chain in embedding.items()},
             })
             if not args.mock and not charge_known:
@@ -384,6 +397,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     manifest.add_argument("--variants", nargs="+", default=["real", "iid", "shuffle", "rotate"])
     manifest.add_argument("--anneal-us", type=int, nargs="+", default=[20, 80, 400])
     manifest.add_argument("--reads", type=int, default=500)
+    manifest.add_argument("--prefactor", type=float, nargs="+", default=[CHAIN_STRENGTH_PREFACTOR],
+                          help="chain-strength prefactors; each one adds a job per model and anneal time")
     manifest.add_argument("--margin", type=float, default=1.1)
     manifest.add_argument("--order-seed", type=int, default=20260926)
     manifest.add_argument("--solver", default="Advantage2_system1")
