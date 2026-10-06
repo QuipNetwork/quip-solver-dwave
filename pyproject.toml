@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "hypothesis"]
+dev = ["pytest", "pytest-asyncio", "hypothesis", "matplotlib>=3.9,<4"]
 
 # Console entry point matches the code's prog name and the coordinator's
 # default binary for the dwave backend.
