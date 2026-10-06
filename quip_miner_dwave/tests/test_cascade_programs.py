@@ -54,6 +54,18 @@ def test_the_gpu_program_takes_the_deep_leg_and_the_observe_interval_that_it_is_
     assert cp.gpu_256_program(leg256)["legs"][-1] == {"start": "fresh", "sweeps": cp.GPU_DEEP_SWEEPS}
 
 
+def test_a_chain_seeds_its_first_leg_and_reheats_the_lanes_of_each_leg_before_the_next():
+    program = cp.chain_program(16, 131072, 0.2498)
+    assert program["name"] == "chain-16x131072-b0250"
+    assert (program["words"], program["observe_every"]) == (2, cp.OBSERVE_EVERY)
+    assert program["legs"][0] == {"start": "seeded", "from_beta": 0.2498, "sweeps": 131072}
+    assert program["legs"][1:] == [{"start": "continue", "from_beta": 0.2498, "sweeps": 131072}] * 15
+    assert len(cp.chain_program(1, 8, 0.25, words=1, observe_every=0)["legs"]) == 1
+    for legs in (0, cp.MAX_LEGS + 1):
+        with pytest.raises(ValueError, match="legs"):
+            cp.chain_program(legs, 131072, 0.2498)
+
+
 def test_start_beta_is_the_log_spaced_point_of_the_ladder():
     hot, cold = 0.0173286795, 6.5169846
     assert cp.start_beta(hot, cold, 0.0) == pytest.approx(hot)

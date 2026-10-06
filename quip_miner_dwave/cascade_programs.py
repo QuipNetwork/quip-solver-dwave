@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Sequence
 REHEAT_BETA = 0.25
 GPU_DEEP_SWEEPS = 1_048_576  # the depth of the deep leg of the GPU arm, the same as ``cold-1048576`` of the QPU arms
 OBSERVE_EVERY = 16_384  # the observe interval of the deep programs of a run
+MAX_LEGS = 16  # the most legs of one program (the engine's ``MAX_SEGS``)
 
 
 def beta_tag(beta: float) -> str:
@@ -20,6 +21,27 @@ def cold_name(sweeps: int) -> str:
 
 def seeded_name(sweeps: int, beta: float) -> str:
     return f"seeded-{sweeps}-{beta_tag(beta)}"
+
+
+def chain_name(legs: int, sweeps: int, beta: float) -> str:
+    return f"chain-{legs}x{sweeps}-{beta_tag(beta)}"
+
+
+def chain_program(
+    legs: int, sweeps: int, beta: float, words: int = 2, observe_every: int = OBSERVE_EVERY
+) -> Dict[str, Any]:
+    """A deep program of ``legs`` legs of ``sweeps`` sweeps, each from ``beta`` to the cold end.
+
+    The first leg starts from the lanes of the answer, and each later leg reheats the lanes that the leg before it
+    left. The miner runs one leg at a time and pushes the best reads so far once: when the target admits them, or after
+    the last leg. On the 96 newest winners, 16 legs of 131,072 sweeps from QPU reads won more rounds than one leg of
+    the same sweeps, or a ladder of legs that double.
+    """
+    if not 1 <= legs <= MAX_LEGS:
+        raise ValueError(f"legs must be 1 to {MAX_LEGS}")
+    leg = {"from_beta": beta, "sweeps": sweeps}
+    return {"name": chain_name(legs, sweeps, beta), "words": words, "observe_every": observe_every,
+            "legs": [{"start": "seeded", **leg}] + [{"start": "continue", **leg} for _ in range(legs - 1)]}
 
 
 def gpu_256_program(
