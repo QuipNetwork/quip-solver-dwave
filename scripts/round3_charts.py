@@ -268,6 +268,89 @@ def chart_depth_extension(summary: Mapping[str, Any], qpu_reach: int) -> Figure:
     return fig
 
 
+AC_ARMS = (("dwave-neal-reference", "production neal", "s"), ("cpu-msa-f64", "cpu-msa-f64, default range", "^"),
+           ("neal-final-30x", "tuned neal 30x", "D"), ("sa-30x-500", "scalar cpu-sa, 30x range", "x"))
+B2_GROUPS = ("B2 32:11", "B2 36:12", "B2 40:13", "B+B2 44:14 pooled", "B 56:18")
+B2_ARMS = (("production neal", "s"), ("tuned neal 30x", "^"), ("deep neal", "D"), ("best CPU arm", "x"))
+
+
+def chart_portfolio_ac(rows: Sequence[Mapping[str, Any]]) -> Figure:
+    """Families A and C: models of 40 at the best-known objective, the QPU at its best anneal against each arm."""
+    fig, ax = plt.subplots(figsize=(7, 0.5 * len(rows) + 1))
+    y = list(range(len(rows)))
+    for arm, name, marker in AC_ARMS:
+        ax.plot([r["cpu"][arm]["reach_best"] for r in rows], y, marker, color=GRAY, ms=5, ls="none", label=name)
+    ax.plot([r["qpu"][str(r["qpu_best_anneal_us"])]["reach_best"] for r in rows], y, "o", color=QPU, ms=7,
+            ls="none", label="QPU, best anneal")
+    ax.set_yticks(y, [r["variant"] for r in rows], fontsize=8)
+    ax.invert_yaxis()
+    ax.set_xlim(-1, 41)  # a marker on the edge stays whole
+    ax.legend(fontsize=7, frameon=False, loc="lower left", ncol=3, bbox_to_anchor=(0, 1))
+    style(ax, xlabel="models at best known, of 40")
+    return fig
+
+
+def chart_family_b2(rows: Sequence[Mapping[str, Any]]) -> Figure:
+    """Family B and B2: share of models at the proven optimum, the QPU at its best anneal against each arm."""
+    best: Dict[str, Mapping[str, Any]] = {}
+    for row in rows:
+        group = row["group"]
+        if group in B2_GROUPS and (group not in best
+                                   or row["exact"]["QPU"]["at_optimum"] > best[group]["exact"]["QPU"]["at_optimum"]):
+            best[group] = row
+    groups = [g for g in B2_GROUPS if g in best]
+
+    def share(group: str, arm: str) -> float:
+        return 100.0 * best[group]["exact"][arm]["at_optimum"] / best[group]["exact"]["models"]
+
+    fig, ax = plt.subplots(figsize=(7, 0.5 * len(groups) + 1))
+    y = list(range(len(groups)))
+    for arm, marker in B2_ARMS:
+        ax.plot([share(g, arm) for g in groups], y, marker, color=GRAY, ms=5, ls="none", label=arm)
+    ax.plot([share(g, "QPU") for g in groups], y, "o", color=QPU, ms=7, ls="none", label="QPU, best anneal")
+    ax.set_yticks(y, [f"{g} ({best[g]['exact']['models']} models)" for g in groups], fontsize=8)
+    ax.invert_yaxis()
+    ax.set_xlim(-2.5, 102.5)
+    ax.legend(fontsize=7, frameon=False, loc="lower left", ncol=3, bbox_to_anchor=(0, 1))
+    style(ax, xlabel="models at the proven optimum, %")
+    return fig
+
+
+def _race_key(key: str) -> Tuple[int, int, str]:
+    size, anneal, cost = key.split()
+    return int(size[2:]), int(anneal[7:-2]), cost
+
+
+def chart_famb_race(verdicts: Mapping[str, Mapping[str, int]]) -> Figure:
+    """Family B time-matched race against tuned neal 30x: access time only (A) and with the finish added (B)."""
+    labels: List[str] = []
+    triples: List[Tuple[int, int, int]] = []
+    for key in sorted(verdicts, key=_race_key):
+        size, anneal, cost = _race_key(key)
+        labels.append(f"N={size}, {anneal} µs, {'access only' if cost == 'cost_a' else 'access + finish'}")
+        counts = verdicts[key]
+        triples.append((counts.get("qpu-better", 0), counts.get("tie", 0), counts.get("qpu-worse", 0)))
+    fig, ax = plt.subplots(figsize=(7, 0.35 * len(labels) + 1))
+    stacked_bars(ax, labels, triples, ("QPU better", "tie", "QPU worse"), total=12)
+    style(ax, xlabel="models of 12")
+    return fig
+
+
+def chart_msa_diversity(summary: Sequence[Mapping[str, Any]]) -> Figure:
+    """Distinct configurations among 64 reads at 131,072 sweeps: the minimum to the median, by regime and kernel."""
+    rows = sorted((r for r in summary if r["sweeps"] == 131072), key=lambda r: (r["cell"], r["kernel"]))
+    fig, ax = plt.subplots(figsize=(6, 0.3 * len(rows) + 1))
+    y = list(range(len(rows)))
+    ax.hlines(y, [r["distinct_rows_min"] for r in rows], [r["distinct_rows_median"] for r in rows], color=LIGHT, lw=2)
+    for yy, row in zip(y, rows):
+        ax.plot(row["distinct_rows_median"], yy, "o", color=GRAY if row["kernel"] == "cpu-sa" else INK, ms=5)
+    ax.set_yticks(y, [f"{r['cell']}, {r['kernel']}" for r in rows], fontsize=8)
+    ax.invert_yaxis()
+    ax.set_xlim(0, 66)
+    style(ax, xlabel="distinct rows of 64 reads, minimum to median")
+    return fig
+
+
 def build_figures(round2: Path, round3: Path) -> Dict[str, Figure]:
     """Every chart, keyed by file stem. Later tasks add entries."""
     eval_summary = read_json(round3 / "analysis" / "eval-summary.json")["summary"]
@@ -280,6 +363,10 @@ def build_figures(round2: Path, round3: Path) -> Dict[str, Figure]:
         "throughput": chart_throughput(read_json(round3 / "qpu-throughput" / "round" / "analysis.json")["arms"]),
         "depth-extension": chart_depth_extension(
             read_json(round2 / "cubic-dimer-depth-extension" / "summary.json"), qpu_reach),
+        "portfolio-ac": chart_portfolio_ac(read_json(round3 / "portfolio-msa-f64-tuned" / "findings.json")["rows"]),
+        "family-b2": chart_family_b2(read_json(round3 / "portfolio-family-b2" / "b2-analysis.json")["rows"]),
+        "famb-race": chart_famb_race(read_json(round3 / "famb-race" / "analysis.json")["equal_time_verdicts"]),
+        "msa-diversity": chart_msa_diversity(read_json(round3 / "msa-read-diversity" / "scan.json")["summary"]),
     }
 
 

@@ -160,3 +160,57 @@ def test_depth_extension_accumulates_the_models_at_target():
     line = fig.axes[0].get_lines()[0]
     assert list(line.get_ydata()) == [53, 81, 91]
     assert "QPU, 1,024 reads: 97" in svg_of(fig)
+
+
+def test_portfolio_ac_plots_the_qpu_at_its_best_anneal_against_four_arms():
+    rows = [{"variant": variant, "qpu_best_anneal_us": 80,
+             "qpu": {"20": {"reach_best": 23}, "80": {"reach_best": 25}, "400": {"reach_best": 25}},
+             "cpu": {"dwave-neal-reference": {"reach_best": 13}, "cpu-msa-f64": {"reach_best": 12},
+                     "neal-final-30x": {"reach_best": 36}, "sa-30x-500": {"reach_best": 37}}}
+            for variant in ("real", "iid", "shuffle", "rotate")]
+    fig = charts.chart_portfolio_ac(rows)
+    qpu_line = [ln for ln in fig.axes[0].get_lines() if ln.get_label() == "QPU, best anneal"][0]
+    assert list(qpu_line.get_xdata()) == [25, 25, 25, 25]
+    assert "scalar cpu-sa, 30x range" in svg_of(fig)
+
+
+def test_family_b2_picks_the_anneal_with_the_most_qpu_optima_per_group():
+    def row(group, anneal, qpu, models=12):
+        arms = {arm: {"at_optimum": 3} for arm in ("production neal", "tuned neal 30x", "deep neal", "best CPU arm")}
+        return {"group": group, "anneal_us": anneal, "exact": {"models": models, "QPU": {"at_optimum": qpu}, **arms}}
+    rows = [row("B2 32:11", 20, 5), row("B2 32:11", 400, 6), row("B+B2 44:14 pooled", 80, 20, models=60),
+            row("B2 32:11 unused", 20, 12)]
+    fig = charts.chart_family_b2(rows)
+    qpu_line = [ln for ln in fig.axes[0].get_lines() if ln.get_label() == "QPU, best anneal"][0]
+    assert list(qpu_line.get_xdata()) == pytest.approx([100.0 * 6 / 12, 100.0 * 20 / 60])
+    assert "B+B2 44:14 pooled (60 models)" in svg_of(fig)
+
+
+def test_famb_race_orders_by_size_anneal_and_cost_and_treats_a_missing_count_as_zero():
+    verdicts = {"n=56 anneal=20us cost_a": {"qpu-better": 12},
+                "n=44 anneal=400us cost_b": {"tie": 5, "qpu-worse": 3, "qpu-better": 4},
+                "n=44 anneal=20us cost_a": {"qpu-better": 8, "tie": 4}}
+    fig = charts.chart_famb_race(verdicts)
+    labels = [t.get_text() for t in fig.axes[0].get_yticklabels()]
+    assert labels == ["N=44, 20 µs, access only", "N=44, 400 µs, access + finish", "N=56, 20 µs, access only"]
+
+
+def test_msa_diversity_shows_minimum_to_median_at_131072_sweeps_only():
+    summary = [{"cell": "clique-portfolio", "kernel": "cpu-msa-f64", "sweeps": 131072,
+                "distinct_rows_median": 1.0, "distinct_rows_min": 1},
+               {"cell": "native-pm1", "kernel": "cpu-msa-unit", "sweeps": 131072,
+                "distinct_rows_median": 64.0, "distinct_rows_min": 64},
+               {"cell": "native-pm1", "kernel": "cpu-msa-unit", "sweeps": 8192,
+                "distinct_rows_median": 64.0, "distinct_rows_min": 64}]
+    fig = charts.chart_msa_diversity(summary)
+    assert len(fig.axes[0].get_yticklabels()) == 2
+    assert "clique-portfolio, cpu-msa-f64" in svg_of(fig)
+
+
+def test_build_figures_returns_ten_charts_from_the_data_roots():
+    if not (charts.ROUND2.exists() and charts.ROUND3.exists()):
+        pytest.skip("data roots are not on this host")
+    figures = charts.build_figures(charts.ROUND2, charts.ROUND3)
+    assert len(figures) == 10
+    for fig in figures.values():
+        plt.close(fig)
