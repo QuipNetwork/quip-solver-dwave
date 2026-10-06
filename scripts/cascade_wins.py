@@ -105,13 +105,14 @@ def run_time(t: float, run: Sequence[Tuple[float, float]]) -> float:
 def arm_clears(events: Sequence[Dict[str, Any]], arm: str, gate_milli: int) -> List[Tuple[float, float]]:
     """``(found, cleared)`` seconds of the first clear of each model in ``arm``.
 
-    A deep leg that ends below the threshold clears, unless it ended ``dropped``: an aborted leg is scored on lanes
-    that did not finish. The kernel stops a leg as ``hit`` when its best falls below the live target of the round,
-    and the leg ends ``passed`` when it runs to its last sweep. A hit above the threshold stopped early at a live
-    target looser than the threshold, so its best is not final and it does not count. The ``gpu-256`` program is
-    one deep leg of two parts, the gated leg and then the cold leg, and its one event is the clear of the ``gpu``
-    arm. A QPU survivor that the sidecar skipped runs on ``gpu-256`` and counts there. The ``qpu-cold`` arm counts
-    a cold leg, and the ``qpu-seeded`` arm a seeded leg, only when the QPU gate kept the model.
+    A deep program that ends below the threshold clears, unless it ended ``dropped``: a gate stopped it, or its lease
+    ended before it pushed. The miner ends a program as ``hit`` when the live target of the round admits its best so
+    far, and as ``passed`` after its last leg; one ``deep`` event reports the whole program, with the best that it
+    pushed, at the time of the push. A hit above the threshold stopped early at a live target looser than the
+    threshold, so its best is not final and it does not count. The ``gpu-256`` program has two legs, the gated leg
+    and then the cold leg, and its one event is the clear of the ``gpu`` arm. A QPU survivor that the sidecar skipped
+    runs on ``gpu-256`` and counts there. The ``qpu-cold`` arm counts its cold program, and the ``qpu-seeded`` arm
+    its seeded program, a single leg or a chain of legs, only when the QPU gate kept the model.
     """
     found = {e["nonce"]: e["t"] for e in events if e["type"] == "survivor"}
     qpu_kept = {e["nonce"] for e in events if e["type"] == "qpu" and e["kept"]}

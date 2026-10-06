@@ -587,10 +587,11 @@ class Sidecar:
         nonce, arm, qpu_lanes = unit or (None, None, 0)
         fields: Dict[str, Any] = {
             "unit": msg["id"], "arm": arm, "nonce": nonce, "program": msg["program"], "status": msg["status"],
-            "checkpoints": msg["checkpoints"], "best": msg["best"], "seconds": msg["seconds"],
+            "checkpoints": msg["checkpoints"], "best": msg["best"], "leg": msg["leg"], "seconds": msg["seconds"],
             "pushed": msg["pushed"], "qpu_lanes": qpu_lanes,
         }
-        if qpu_lanes:
+        # A best with no leg is the survivor's own reads, whose lanes the QPU did not seed.
+        if qpu_lanes and msg["leg"] is not None:
             fields.update(lane_bests(msg["energies"], qpu_lanes))
         self.journal.event("deep", **fields)
 

@@ -338,19 +338,38 @@ def test_a_miner_deep_line_becomes_a_deep_event_with_the_arm_and_the_lane_bests(
         out.wait_for(3)
         for index, program in enumerate(programs):
             yield json.dumps({"ev": "deep", "id": f"7:{index}", "program": program, "status": "passed",
-                              "checkpoints": [-100, -110], "best": -120, "energies": energies, "seconds": 12.5,
-                              "pushed": 1})
+                              "checkpoints": [-100, -120], "best": -120, "leg": 1, "energies": energies,
+                              "seconds": 12.5, "pushed": 1})
 
     _, events = run_sidecar(sidecar, tmp_path, feed(), out=out)
     deep = {e["unit"]: e for e in events if e["type"] == "deep"}
     assert [deep[f"7:{i}"]["arm"] for i in range(3)] == ["gpu-256", "cold", "qpu-seeded"]
     seeded = deep["7:2"]
-    assert (seeded["nonce"], seeded["program"], seeded["status"], seeded["best"], seeded["seconds"],
-            seeded["pushed"], seeded["checkpoints"]) == (nonce_of(2, 2), programs[2], "passed", -120, 12.5, 1, [-100, -110])
+    assert (seeded["nonce"], seeded["program"], seeded["status"], seeded["best"], seeded["leg"], seeded["seconds"],
+            seeded["pushed"], seeded["checkpoints"]) == (nonce_of(2, 2), programs[2], "passed", -120, 1, 12.5, 1,
+                                                         [-100, -120])
     assert seeded["qpu_lanes"] == 64 and seeded["qpu_lane_best"] == -120 and seeded["fill_lane_best"] == -110
     for unit in ("7:0", "7:1"):
         assert deep[unit]["nonce"] == nonce_of(int(unit[-1]), int(unit[-1])) and deep[unit]["qpu_lanes"] == 0
         assert "qpu_lane_best" not in deep[unit] and "fill_lane_best" not in deep[unit]
+
+
+def test_a_best_that_no_leg_reached_has_no_lane_bests(sidecar, tmp_path):
+    out = Output()
+
+    def feed():
+        yield ready_line()
+        yield survivor_line(2, 2)
+        out.wait_for(1)
+        # The target admitted the survivor's own best before a leg beat it: the energies are the screen's lanes.
+        yield json.dumps({"ev": "deep", "id": "7:2", "program": "seeded-1048576-b0250", "status": "hit",
+                          "checkpoints": [], "best": -130, "leg": None, "energies": [-130] * 128, "seconds": 0.5,
+                          "pushed": 1})
+
+    _, events = run_sidecar(sidecar, tmp_path, feed(), out=out)
+    (deep,) = [e for e in events if e["type"] == "deep"]
+    assert (deep["arm"], deep["qpu_lanes"], deep["leg"]) == ("qpu-seeded", 64, None)
+    assert "qpu_lane_best" not in deep and "fill_lane_best" not in deep
 
 
 def test_the_unit_records_are_bounded_and_a_deep_line_with_no_record_has_no_arm(sidecar, tmp_path, monkeypatch):
@@ -359,7 +378,7 @@ def test_the_unit_records_are_bounded_and_a_deep_line_with_no_record_has_no_arm(
 
     def deep_line(index):
         return json.dumps({"ev": "deep", "id": f"7:{index}", "program": "gpu-256", "status": "dropped",
-                           "checkpoints": [], "best": -50, "energies": [], "seconds": 1.0, "pushed": 0})
+                           "checkpoints": [], "best": -50, "leg": None, "energies": [], "seconds": 1.0, "pushed": 0})
 
     def feed():
         yield ready_line()
