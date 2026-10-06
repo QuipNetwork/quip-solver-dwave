@@ -145,11 +145,141 @@ def chart_lattice_ladder(summary: Sequence[Mapping[str, Any]]) -> Figure:
     return fig
 
 
+def read_clean_timing(root: Path) -> List[Dict[str, Any]]:
+    """One row per completed clean run: the kernel that ran, its sweeps, and its sampling seconds."""
+    rows: List[Dict[str, Any]] = []
+    for path in sorted((root / "runs").glob("*/result.json")):
+        record = read_json(path)
+        if record["status"] == "completed":
+            rows.append({"cell": record["cell"], "kernel": record["observed_kernel"],
+                         "sweeps": record["sweeps"], "sampling_s": record["sampling_s"]})
+    return rows
+
+
+def read_seeded(round3: Path) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for name in ("eval100", "f025", "n125-early"):
+        rows += read_json(round3 / "seeded" / name / "summary.json")
+    return rows
+
+
+def chart_clean_time(rows: Sequence[Mapping[str, Any]]) -> Figure:
+    """Sampling seconds of one model on one quiet core, by sweeps and kernel, against the QPU's times."""
+    fig, axes = plt.subplots(1, len(CELLS), figsize=(11, 2.8), sharey=True)
+    fig.subplots_adjust(wspace=0.5)
+    for ax, cell in zip(axes, CELLS):
+        series: Dict[str, List[Tuple[int, float]]] = defaultdict(list)
+        for row in rows:
+            if row["cell"] == cell:
+                series[row["kernel"]].append((row["sweeps"], row["sampling_s"]))
+        ends = []
+        for kernel, points in sorted(series.items()):
+            points.sort()
+            ax.plot([p[0] for p in points], [p[1] for p in points], marker="o", ms=3, lw=1, **KERNEL_STYLE[kernel])
+            ends.append((points[-1][0], points[-1][1], kernel, KERNEL_STYLE[kernel]["color"]))
+        for seconds in (0.07, 2.2):  # QPU access for 64 reads, and QPU wall time per call; the caption names them
+            ax.axhline(seconds, color=QPU, lw=0.6, ls="--")
+        ax.set_xscale("log", base=2)
+        ax.set_yscale("log")
+        label_ends(ax, ends)
+        style(ax, title=cell, xlabel="sweeps", ylabel="seconds, one model, one core" if cell == CELLS[0] else "")
+    return fig
+
+
+def chart_seeded(rows: Sequence[Mapping[str, Any]]) -> Figure:
+    """Models of 100 where the QPU-seeded run beats cold, at equal sweeps (solid) and against cold 131,072 (dashed).
+
+    Sign lattices show the unit kernel. ``native-125`` has only the f64 kernel. The report caption explains the
+    line styles, so the chart carries no legend.
+    """
+    fig, axes = plt.subplots(1, len(CELLS), figsize=(11, 2.8), sharey=True)
+    fig.subplots_adjust(wspace=0.5)
+    for ax, cell in zip(axes, CELLS):
+        ends = []
+        for fraction, color in ((0.25, INK), (0.5, GRAY)):
+            picked = sorted((r for r in rows if r["cell"] == cell and r["fraction"] == fraction
+                             and (r["kernel"] == "cpu-msa-unit" or cell == "native-125")),
+                            key=lambda r: r["sweeps"])
+            if not picked:
+                continue
+            x = [r["sweeps"] for r in picked]
+            same = [r["vs_cold_same"]["seeded_better"] for r in picked]
+            deep = [r["vs_cold_131072"]["seeded_better"] for r in picked]
+            ax.plot(x, same, marker="o", ms=3, lw=1, color=color)
+            ax.plot(x, deep, marker="o", ms=3, lw=1, color=color, ls="--")
+            ends.append((x[-1], same[-1], f"f = {fraction}", color))
+        ax.set_xscale("log", base=2)
+        ax.set_ylim(0, 100)
+        ax.axhline(50, color=LIGHT, lw=0.6)
+        label_ends(ax, ends)
+        style(ax, title=cell, xlabel="seeded sweeps", ylabel="seeded better, of 100" if cell == CELLS[0] else "")
+    return fig
+
+
+def chart_cuda_depth(table: Sequence[Mapping[str, Any]]) -> Figure:
+    """cubic-dimer-pm1: CUDA MSA at 128 reads against the QPU's 1,024 reads and its expected best of 64."""
+    labels: List[str] = []
+    triples: List[Tuple[int, int, int]] = []
+    for row in sorted((r for r in table if r["reads"] == 128), key=lambda r: r["sweeps"]):
+        for key, qpu_reads in (("vs_qpu_best", "1,024 reads"), ("vs_qpu_best64", "64 reads")):
+            labels.append(f"CUDA {row['sweeps']:,} sweeps vs QPU {qpu_reads}")
+            cmp = row[key]
+            triples.append((cmp["qpu_better"], cmp["tie"], cmp["cpu_better"]))
+    fig, ax = plt.subplots(figsize=(7, 0.45 * len(labels) + 1))
+    stacked_bars(ax, labels, triples, ("QPU better", "tie", "CUDA better"), total=100)
+    style(ax, xlabel="models of 100")
+    return fig
+
+
+def chart_throughput(arms: Sequence[Mapping[str, Any]]) -> Figure:
+    """cubic-dimer-pm1 models per second end to end, by reads and calls in flight, against the access limit."""
+    fig, ax = plt.subplots(figsize=(6, 0.5 * len(arms) + 1))
+    y = list(range(len(arms)))
+    ax.hlines(y, [0.0] * len(arms), [a["access_limited_models_per_s"] for a in arms], color=LIGHT, lw=4)
+    ax.plot([a["models_per_s"] for a in arms], y, "o", color=QPU, ms=6)
+    for yy, arm in zip(y, arms):
+        ax.text(arm["models_per_s"], yy - 0.3, f"{arm['models_per_s']:.2f}", ha="center", fontsize=7, color=QPU)
+        ax.text(arm["access_limited_models_per_s"], yy, f" limit {arm['access_limited_models_per_s']:.1f}",
+                va="center", fontsize=7, color=GRAY)
+    ax.set_yticks(y, [f"{a['reads']:,} reads, {a['concurrency']} in flight" for a in arms], fontsize=8)
+    ax.invert_yaxis()
+    ax.set_xlim(0, 17)
+    style(ax, xlabel="models per second")
+    return fig
+
+
+def chart_depth_extension(summary: Mapping[str, Any], qpu_reach: int) -> Figure:
+    """cubic-dimer-pm1: models of 100 at the frozen target as cpu-msa-unit sweeps grow, against the QPU."""
+    reached = summary["base_models"] - summary["base_missing"]
+    points = [(summary["base_sweeps"], reached)]
+    for sweeps, models in sorted(summary["depths"].items(), key=lambda kv: int(kv[0])):
+        reached += sum(1 for model in models.values() if model["target_reached"])
+        points.append((int(sweeps), reached))
+    fig, ax = plt.subplots(figsize=(5, 2.6))
+    ax.plot([p[0] for p in points], [p[1] for p in points], marker="o", ms=3, lw=1, color=INK)
+    for x, y in points:
+        ax.annotate(str(y), (x, y), xytext=(0, 5), textcoords="offset points", fontsize=7, ha="center", color=INK)
+    ax.axhline(qpu_reach, color=QPU, lw=0.8, ls="--")
+    ax.annotate(f"QPU, 1,024 reads: {qpu_reach}", (points[0][0], qpu_reach), xytext=(0, -9),
+                textcoords="offset points", fontsize=7, color=QPU)
+    ax.set_xscale("log", base=2)
+    ax.set_ylim(40, 100)
+    style(ax, xlabel="cpu-msa-unit sweeps", ylabel="models at target, of 100")
+    return fig
+
+
 def build_figures(round2: Path, round3: Path) -> Dict[str, Figure]:
     """Every chart, keyed by file stem. Later tasks add entries."""
     eval_summary = read_json(round3 / "analysis" / "eval-summary.json")["summary"]
+    qpu_reach = next(row["reach_target"] for row in eval_summary if row["cell"] == "cubic-dimer-pm1")
     return {
         "lattice-ladder": chart_lattice_ladder(eval_summary),
+        "clean-time": chart_clean_time(read_clean_timing(round2 / "cpu-timing-clean")),
+        "seeded": chart_seeded(read_seeded(round3)),
+        "cuda-depth": chart_cuda_depth(read_json(round3 / "cubic-cuda" / "analysis.json")["table"]),
+        "throughput": chart_throughput(read_json(round3 / "qpu-throughput" / "round" / "analysis.json")["arms"]),
+        "depth-extension": chart_depth_extension(
+            read_json(round2 / "cubic-dimer-depth-extension" / "summary.json"), qpu_reach),
     }
 
 

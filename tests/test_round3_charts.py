@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import pathlib
 import sys
 
@@ -75,3 +76,87 @@ def test_label_ends_separates_labels_that_end_at_the_same_point():
     assert offsets["a"][1] >= 0 and offsets["b"][1] >= 0  # a group on the floor stacks upward
     assert offsets["c"] == (4, 0)
     plt.close(fig)
+
+
+def test_read_clean_timing_skips_unsupported_records(tmp_path):
+    runs = tmp_path / "runs"
+    for key, record in {
+        "a": {"cell": "native-pm1", "kernel": "cpu-sa", "observed_kernel": "cpu-sa", "sweeps": 8192,
+              "status": "completed", "sampling_s": 1.5},
+        "b": {"cell": "clique-portfolio", "kernel": "cpu-msa-unit", "observed_kernel": None, "sweeps": 8192,
+              "status": "unsupported", "sampling_s": None},
+    }.items():
+        (runs / key).mkdir(parents=True)
+        (runs / key / "result.json").write_text(json.dumps(record), encoding="utf-8")
+    rows = charts.read_clean_timing(tmp_path)
+    assert rows == [{"cell": "native-pm1", "kernel": "cpu-sa", "sweeps": 8192, "sampling_s": 1.5}]
+
+
+def test_clean_time_draws_the_qpu_reference_lines_in_every_panel():
+    rows = [{"cell": cell, "kernel": kernel, "sweeps": sweeps, "sampling_s": sweeps / 20000 * factor}
+            for cell in charts.CELLS for kernel, factor in (("cpu-msa-unit", 1), ("cpu-msa-f64", 6))
+            for sweeps in (8192, 32768, 131072)]
+    fig = charts.chart_clean_time(rows)
+    dashed = [[ln for ln in ax.get_lines() if ln.get_linestyle() == "--"] for ax in fig.axes]
+    assert [len(lines) for lines in dashed] == [2] * len(charts.CELLS)
+    assert sorted(float(ln.get_ydata()[0]) for ln in dashed[0]) == [0.07, 2.2]
+    assert "QPU access" not in svg_of(fig)  # the caption names the lines; text in the panel crosses a data line
+
+
+def _seeded_rows():
+    rows = []
+    for cell in charts.CELLS:
+        kernel = "cpu-msa-f64" if cell == "native-125" else "cpu-msa-unit"
+        for fraction in (0.25, 0.5):
+            for sweeps, same, deep in ((8192, 100, 5), (32768, 71, 12), (131072, 62, 62)):
+                rows.append({"cell": cell, "kernel": kernel, "sweeps": sweeps, "fraction": fraction,
+                             "vs_cold_same": {"n": 100, "seeded_better": same, "cold_better": 100 - same},
+                             "vs_cold_131072": {"n": 100, "seeded_better": deep, "cold_better": 100 - deep}})
+    rows.append({"cell": "cubic-dimer-pm1", "kernel": "cpu-msa-f64", "sweeps": 8192, "fraction": 0.25,
+                 "vs_cold_same": {"n": 100, "seeded_better": 100, "cold_better": 0},
+                 "vs_cold_131072": {"n": 100, "seeded_better": 78, "cold_better": 5}})
+    return rows
+
+
+def test_seeded_uses_the_unit_kernel_on_sign_lattices_and_f64_on_native_125():
+    fig = charts.chart_seeded(_seeded_rows())
+    assert len(fig.axes) == len(charts.CELLS)
+    # two fractions, two comparisons each: four data lines per panel (the 50% reference line has 2 points),
+    # and the one-point f64 cubic row is not drawn
+    assert all(len([ln for ln in ax.get_lines() if len(ln.get_xdata()) == 3]) == 4 for ax in fig.axes)
+    svg = svg_of(fig)
+    assert svg.count("f = 0.25") == len(charts.CELLS)
+
+
+def test_cuda_depth_uses_the_128_read_rows_only():
+    table = [
+        {"sweeps": 131072, "reads": 64, "vs_qpu_best": {"qpu_better": 80, "tie": 17, "cpu_better": 3},
+         "vs_qpu_best64": {"qpu_better": 66, "tie": 0, "cpu_better": 34}},
+        {"sweeps": 131072, "reads": 128, "vs_qpu_best": {"qpu_better": 71, "tie": 20, "cpu_better": 9},
+         "vs_qpu_best64": {"qpu_better": 55, "tie": 0, "cpu_better": 45}},
+        {"sweeps": 1048576, "reads": 128, "vs_qpu_best": {"qpu_better": 43, "tie": 34, "cpu_better": 23},
+         "vs_qpu_best64": {"qpu_better": 23, "tie": 0, "cpu_better": 77}},
+    ]
+    fig = charts.chart_cuda_depth(table)
+    qpu_better = [bar.get_width() for bar in fig.axes[0].containers[0]]
+    assert qpu_better == [71, 55, 43, 23]  # the 64-read row is not drawn
+    svg = svg_of(fig)
+    assert "CUDA 131,072 sweeps vs QPU 1,024 reads" in svg
+    assert "CUDA 1,048,576 sweeps vs QPU 64 reads" in svg
+
+
+def test_throughput_marks_the_achieved_rate_and_the_access_limit():
+    arms = [{"reads": 64, "concurrency": 16, "models_per_s": 5.28, "access_limited_models_per_s": 14.24},
+            {"reads": 1024, "concurrency": 4, "models_per_s": 0.62, "access_limited_models_per_s": 1.66}]
+    svg = svg_of(charts.chart_throughput(arms))
+    assert "64 reads, 16 in flight" in svg and "limit 14.2" in svg and "5.28" in svg
+
+
+def test_depth_extension_accumulates_the_models_at_target():
+    summary = {"base_sweeps": 131072, "base_models": 100, "base_missing": 47,
+               "depths": {"524288": {"h%d" % i: {"target_reached": i < 28} for i in range(47)},
+                          "2097152": {"h%d" % i: {"target_reached": i < 10} for i in range(19)}}}
+    fig = charts.chart_depth_extension(summary, qpu_reach=97)
+    line = fig.axes[0].get_lines()[0]
+    assert list(line.get_ydata()) == [53, 81, 91]
+    assert "QPU, 1,024 reads: 97" in svg_of(fig)
