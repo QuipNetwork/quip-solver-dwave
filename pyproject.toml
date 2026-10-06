@@ -45,3 +45,4 @@ include = ["quip_miner_dwave*"]
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
+extraPaths = ["scripts"]
