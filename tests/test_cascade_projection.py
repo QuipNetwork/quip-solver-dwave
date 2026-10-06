@@ -50,11 +50,11 @@ def _events():
     ]
 
 
-def test_poisson_interval_is_exact_to_five_and_normal_above():
-    assert projection.poisson_interval(0) == (0.0, 3.689)
-    assert projection.poisson_interval(1) == (0.0253, 5.572)
-    low, high = projection.poisson_interval(100)
-    assert low == pytest.approx(80.4) and high == pytest.approx(119.6)
+def test_poisson_interval_is_exact_at_every_count():
+    assert projection.poisson_interval(0) == pytest.approx((0.0, 3.689), abs=1e-3)
+    assert projection.poisson_interval(1) == pytest.approx((0.0253, 5.572), abs=1e-3)
+    assert projection.poisson_interval(6) == pytest.approx((2.2019, 13.0595), abs=1e-3)  # not the normal 1.2, 10.8
+    assert projection.poisson_interval(100) == pytest.approx((81.36, 121.63), abs=1e-2)
 
 
 def test_win_share_is_zero_without_a_rate_and_rises_with_it():
@@ -73,7 +73,7 @@ def test_project_with_zero_clears_uses_the_interval_and_the_fallback_latency():
     result = projection.project({}, run_seconds=3600.0, round_lengths=[400.0, 500.0], latency_default=120.0)
     assert result["clears"] == 0 and result["latency_s"] == 120.0
     assert result["point"]["win_share"] == 0.0 and result["low"]["win_share"] == 0.0
-    assert result["high"]["clears"] == 3.689 and result["high"]["win_share"] > 0.0
+    assert result["high"]["clears"] == pytest.approx(3.689, abs=1e-3) and result["high"]["win_share"] > 0.0
 
 
 def test_last_stats_per_launch_skips_a_launch_without_stats():
@@ -110,5 +110,17 @@ def test_main_writes_projection_json_and_three_charts(tmp_path):
     written = json.loads((out / "projection.json").read_text(encoding="utf-8"))
     assert written["scenarios"]["pipeline"]["clears"] == 1 and written["scenarios"]["qpu-only"]["clears"] == 0
     assert written["funnel"][0] == ["salts", 1000] and written["funnel"][-1] == ["clears", 1]
+    assert ["finished deep legs, QPU arms", 1] in written["funnel"]
+    assert ["finished deep legs, gpu-256", 2] in written["funnel"]
     for name in ("funnel.svg", "deep-energy.svg", "qpu-ladder.svg"):
         assert (out / name).exists()
+
+
+def test_deep_energy_colors_every_qpu_arm_leg_in_the_accent_color():
+    legs = [("gpu-256", "gpu-256", -14650.0), ("chain-16x131072-b0250", "qpu-seeded", -14660.0),
+            ("cold-1048576", "cold", -14670.0)]
+    fig = projection.chart_deep_energy(legs, GATE)
+    colors = {ln.get_label(): ln.get_color() for ln in fig.axes[0].get_lines() if ln.get_label().startswith("program:")}
+    assert colors["program:chain-16x131072-b0250"] == projection.QPU
+    assert colors["program:cold-1048576"] == projection.QPU
+    assert colors["program:gpu-256"] == projection.GRAY

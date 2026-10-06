@@ -39,24 +39,38 @@ from round3_charts import GRAY, INK, LIGHT, QPU, save, style  # noqa: E402
 QPU_ARMS: Set[str] = {"cold", "qpu-seeded"}
 ALL_ARMS: Set[str] = {"gpu-256", "cold", "qpu-seeded"}
 SURVIVOR_QPU_ARMS = ("qpu-cold", "qpu-seeded")
-# Garwood's exact 95% bounds on the Poisson mean for a count of 0 to 5: chi-squared quantiles over 2.
-GARWOOD: Dict[int, Tuple[float, float]] = {
-    0: (0.0, 3.689), 1: (0.0253, 5.572), 2: (0.2422, 7.225), 3: (0.6187, 8.767), 4: (1.0899, 10.242),
-    5: (1.6235, 11.668),
-}
 Clear = Tuple[float, float]
+Leg = Tuple[str, str, float]  # program, arm, best energy
 
 
 def read_jsonl(path: Path) -> List[Dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def poisson_cdf(count: int, mean: float) -> float:
+    """P(X <= count) for a Poisson mean."""
+    return sum(math.exp(k * math.log(mean) - mean - math.lgamma(k + 1)) for k in range(count + 1)) if mean > 0 else 1.0
+
+
 def poisson_interval(clears: int) -> Tuple[float, float]:
-    """95% interval on the mean of a Poisson count: exact to 5, the normal approximation above."""
-    if clears in GARWOOD:
-        return GARWOOD[clears]
-    half = 1.96 * math.sqrt(clears)
-    return clears - half, clears + half
+    """Garwood's exact 95% interval on the mean of a Poisson count, by bisection on the Poisson CDF.
+
+    The lower bound is the mean at which a count of ``clears`` or more has probability 0.025, and the upper bound
+    is the mean at which a count of ``clears`` or fewer has probability 0.025. A count of 0 has no lower bound.
+    """
+
+    def solve(target: float, count: int) -> float:
+        low, high = 0.0, clears + 10.0 * math.sqrt(clears + 1.0) + 10.0
+        for _ in range(200):
+            mid = (low + high) / 2
+            if poisson_cdf(count, mid) > target:
+                low = mid
+            else:
+                high = mid
+        return (low + high) / 2
+
+    lower = solve(0.975, clears - 1) if clears > 0 else 0.0
+    return lower, solve(0.025, clears)
 
 
 def win_share(rate: float, latency_s: float, round_lengths: Sequence[float]) -> float:
@@ -176,10 +190,13 @@ def funnel(events_by_card: Mapping[str, Sequence[Mapping[str, Any]]], wins: Mapp
                 passed[index] += stats["passed"][index]
     events = [e for card in events_by_card.values() for e in card]
     calls = [e for e in events if e["type"] == "qpu"]
-    finished = sum(1 for e in events if e["type"] == "deep" and e["status"] != "dropped")
+    finished = [e for e in events if e["type"] == "deep" and e["status"] != "dropped"]
+    # The pipeline branches at the handoff: the gpu-256 arm never calls the QPU, so its legs are listed apart.
     return [("salts", int(wins["salts"])), ("after 8 sweeps", passed[0]), ("after 16 sweeps", passed[1]),
             ("after 64 sweeps", passed[2]), ("QPU calls", len(calls)),
-            ("QPU kept", sum(1 for e in calls if e["kept"])), ("finished deep legs", finished), ("clears", clears)]
+            ("QPU kept", sum(1 for e in calls if e["kept"])),
+            ("finished deep legs, QPU arms", sum(1 for e in finished if e["arm"] in QPU_ARMS)),
+            ("finished deep legs, gpu-256", sum(1 for e in finished if e["arm"] == "gpu-256")), ("clears", clears)]
 
 
 def chart_funnel(stages: Sequence[Tuple[str, int]]) -> Figure:
@@ -197,15 +214,16 @@ def chart_funnel(stages: Sequence[Tuple[str, int]]) -> Figure:
     return fig
 
 
-def chart_deep_energy(legs: Sequence[Tuple[str, float]], gate_milli: int) -> Figure:
-    """Best energy of every finished deep leg, by program, against the chain threshold."""
-    programs = sorted({program for program, _ in legs})
+def chart_deep_energy(legs: Sequence[Leg], gate_milli: int) -> Figure:
+    """Best energy of every finished deep leg, by program, against the chain threshold. QPU-arm legs are blue."""
+    programs = sorted({program for program, _, _ in legs})
     fig, ax = plt.subplots(figsize=(6, 0.5 * len(programs) + 1))
     rng = np.random.default_rng(0)
     for yy, program in enumerate(programs):
-        bests = [best for name, best in legs if name == program]
-        ax.plot(bests, yy + rng.uniform(-0.15, 0.15, len(bests)), "o", ms=3, alpha=0.5,
-                color=QPU if "seeded" in program or "cold" in program else GRAY, ls="none")
+        bests = [best for name, _, best in legs if name == program]
+        arms = {arm for name, arm, _ in legs if name == program}
+        ax.plot(bests, yy + rng.uniform(-0.15, 0.15, len(bests)), "o", ms=3, alpha=0.5, ls="none",
+                color=QPU if arms & QPU_ARMS else GRAY, label=f"program:{program}")
     ax.axvline(gate_milli / 1000.0, color=INK, lw=0.8, ls="--")
     ax.annotate("chain threshold", (gate_milli / 1000.0, -0.7), xytext=(4, 0), textcoords="offset points",
                 fontsize=7, color=INK, ha="left", va="center")
@@ -266,7 +284,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                "funnel": [[label, count] for label, count in stages]}
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "projection.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
-    legs = [(e["program"], float(e["best"])) for e in events if e["type"] == "deep" and e["status"] != "dropped"]
+    legs = [(e["program"], e["arm"], float(e["best"])) for e in events
+            if e["type"] == "deep" and e["status"] != "dropped"]
     save(chart_funnel(stages), args.out / "funnel.svg")
     save(chart_deep_energy(legs, gate), args.out / "deep-energy.svg")
     save(chart_ladder(use["ladder"]), args.out / "qpu-ladder.svg")
