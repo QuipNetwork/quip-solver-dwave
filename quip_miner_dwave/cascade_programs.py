@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 REHEAT_BETA = 0.25
 GPU_DEEP_SWEEPS = 1_048_576  # the depth of the deep leg of the GPU arm, the same as ``cold-1048576`` of the QPU arms
@@ -23,12 +23,15 @@ def seeded_name(sweeps: int, beta: float) -> str:
     return f"seeded-{sweeps}-{beta_tag(beta)}"
 
 
-def chain_name(legs: int, sweeps: int, beta: float) -> str:
-    return f"chain-{legs}x{sweeps}-{beta_tag(beta)}"
+def chain_name(legs: int, sweeps: int, beta: float, first_gate: Optional[int] = None) -> str:
+    """``chain-16x131072-b0250``, and ``chain-16x131072-b0250-g14696`` with a first-leg gate of -14696."""
+    name = f"chain-{legs}x{sweeps}-{beta_tag(beta)}"
+    return name if first_gate is None else f"{name}-g{-first_gate}"
 
 
 def chain_program(
-    legs: int, sweeps: int, beta: float, words: int = 2, observe_every: int = OBSERVE_EVERY
+    legs: int, sweeps: int, beta: float, words: int = 2, observe_every: int = OBSERVE_EVERY,
+    first_gate: Optional[int] = None,
 ) -> Dict[str, Any]:
     """A deep program of ``legs`` legs of ``sweeps`` sweeps, each from ``beta`` to the cold end.
 
@@ -36,12 +39,19 @@ def chain_program(
     left. The miner runs one leg at a time and pushes the best reads so far once: when the target admits them, or after
     the last leg. On the 96 newest winners, 16 legs of 131,072 sweeps from QPU reads won more rounds than one leg of
     the same sweeps, or a ladder of legs that double.
+
+    With ``first_gate``, the program ends after its first leg unless that leg's best is at or below the gate. On the
+    300 winners of qblocks 9383-9682, a gate of -14696 after one leg of 131,072 sweeps kept 99 % of the winners that
+    16 legs clear, and passed 0.7 % of the models that the GPU 256-sweep gate passes.
     """
     if not 1 <= legs <= MAX_LEGS:
         raise ValueError(f"legs must be 1 to {MAX_LEGS}")
     leg = {"from_beta": beta, "sweeps": sweeps}
-    return {"name": chain_name(legs, sweeps, beta), "words": words, "observe_every": observe_every,
-            "legs": [{"start": "seeded", **leg}] + [{"start": "continue", **leg} for _ in range(legs - 1)]}
+    first: Dict[str, Any] = {"start": "seeded", **leg}
+    if first_gate is not None:
+        first["gate"] = first_gate
+    return {"name": chain_name(legs, sweeps, beta, first_gate), "words": words, "observe_every": observe_every,
+            "legs": [first] + [{"start": "continue", **leg} for _ in range(legs - 1)]}
 
 
 def gpu_256_program(

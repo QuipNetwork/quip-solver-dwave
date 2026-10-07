@@ -56,6 +56,7 @@ chain_capture = _load_chain_qpu_capture()
 
 ARMS = ("gpu-256", "qpu-cold", "qpu-seeded")
 GPU_SALT = 3  # the kernel seed salt of the GPU arm. The seeded arm uses 10, and the cold arm 1000
+MAX_COPIES = 8  # the most copies of a deep answer that the engine runs
 MOCK_ACCESS_US = 50_000
 ANSWERED_LIMIT = 4096  # deep legs remembered for the miner's later ``deep`` line. The oldest go first
 EVENTS_FILE = "events.jsonl"
@@ -161,6 +162,7 @@ class Config:
     anneal_us: int
     j_scale: float
     mock: bool
+    copies: int = 1  # independent deep units of each deep answer, which share one push
 
 
 class Journal:
@@ -613,7 +615,9 @@ class Sidecar:
 
     def _run_on_gpu(self, job_id: str, nonce: str) -> None:
         seed = cascade_flow.unit_seed(nonce, GPU_SALT)
-        message = {"op": "deep", "id": job_id, "program": self.config.gpu_program, "seed": seed}
+        message: Dict[str, Any] = {"op": "deep", "id": job_id, "program": self.config.gpu_program, "seed": seed}
+        if self.config.copies > 1:
+            message["copies"] = self.config.copies
         self._reply(message, Unit(nonce, "gpu-256", 0))
 
     def _settle(self, job: Job) -> bool:
@@ -805,6 +809,8 @@ class Sidecar:
         if plans:  # one arm asked for a plan, so the gate leaves one plan or none
             plan = plans[0]
             message = {"op": "deep", "id": job.id, "program": plan.program, "seed": plan.seed}
+            if config.copies > 1:
+                message["copies"] = config.copies
             if plan.states is not None:
                 assert self._ready is not None
                 message["lanes"] = cascade_codec.encode_lanes(plan.states, self._ready.words)
@@ -856,6 +862,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cold-program", default="cold-1048576")
     parser.add_argument("--seeded-program", default="seeded-1048576-b0250")
     parser.add_argument("--gpu-program", default="gpu-256")
+    parser.add_argument("--copies", type=int, default=1,
+                        help=f"independent deep units for each deep answer, 1 to {MAX_COPIES}; the engine pushes the "
+                             "first hit of any of them, or their best when the last one ends")
     parser.add_argument("--spec", help="the topology spec of the QPU runs; needed unless --mock. With --mock it makes "
                                        "the sidecar check the model and the lane order of the miner, as a live run does")
     parser.add_argument("--mock", action="store_true",
@@ -877,6 +886,8 @@ def resolve(parser: argparse.ArgumentParser, args: argparse.Namespace) -> Config
             parser.error(f"--{name.replace('_', '-')} must be at least 1")
     if args.queue < 0:
         parser.error("--queue must not be negative")
+    if not 1 <= args.copies <= MAX_COPIES:
+        parser.error(f"--copies must be 1 to {MAX_COPIES}")
     try:
         cut = load_gate(args.qpu_gates, args.qpu_miss)
     except (OSError, ValueError) as exc:
@@ -885,7 +896,8 @@ def resolve(parser: argparse.ArgumentParser, args: argparse.Namespace) -> Config
         out_dir=args.out_dir, arms=args.arms, gpu_program=args.gpu_program, cold_program=args.cold_program,
         seeded_program=args.seeded_program, qpu_miss=args.qpu_miss, qpu_gate_milli=cut,
         qpu_seconds=args.qpu_seconds, spend_until_s=args.spend_until.timestamp(), in_flight=args.in_flight,
-        queue=args.queue, reads=args.reads, anneal_us=args.anneal_us, j_scale=args.j_scale, mock=args.mock)
+        queue=args.queue, reads=args.reads, anneal_us=args.anneal_us, j_scale=args.j_scale, mock=args.mock,
+        copies=args.copies)
 
 
 def serve(

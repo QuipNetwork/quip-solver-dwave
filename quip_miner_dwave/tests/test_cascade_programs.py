@@ -66,6 +66,13 @@ def test_a_chain_seeds_its_first_leg_and_reheats_the_lanes_of_each_leg_before_th
             cp.chain_program(legs, 131072, 0.2498)
 
 
+def test_a_first_gate_gates_only_the_first_leg_and_names_the_chain():
+    program = cp.chain_program(16, 131072, 0.2498, first_gate=-14696)
+    assert program["name"] == "chain-16x131072-b0250-g14696"
+    assert program["legs"][0] == {"start": "seeded", "from_beta": 0.2498, "sweeps": 131072, "gate": -14696}
+    assert program["legs"][1:] == cp.chain_program(16, 131072, 0.2498)["legs"][1:]
+
+
 def test_start_beta_is_the_log_spaced_point_of_the_ladder():
     hot, cold = 0.0173286795, 6.5169846
     assert cp.start_beta(hot, cold, 0.0) == pytest.approx(hot)

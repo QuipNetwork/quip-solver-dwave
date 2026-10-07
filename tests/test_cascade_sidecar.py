@@ -259,6 +259,32 @@ def test_each_arm_answers_a_survivor_with_one_deep_or_drop(sidecar, tmp_path):
     assert len({row.tobytes() for row in rows}) == LANES
 
 
+def test_copies_ride_on_every_deep_answer_and_never_on_a_drop(sidecar, tmp_path):
+    # The first nonce byte 0, 1, 2 lands on gpu-256, qpu-cold, qpu-seeded; survivor 3 has a best the QPU gate drops.
+    lines = [ready_line(), survivor_line(0, 0), survivor_line(1, 1), survivor_line(2, 2),
+             survivor_line(3, 2, best=-90)]
+    answers, _ = run_sidecar(sidecar, tmp_path, lines, copies=4)
+    by_id = {answer["id"]: answer for answer in answers}
+    assert [by_id[f"7:{i}"]["copies"] for i in range(3)] == [4, 4, 4]
+    assert by_id["7:3"] == {"op": "drop", "id": "7:3"}
+    (tmp_path / "single").mkdir()
+    single, _ = run_sidecar(sidecar, tmp_path / "single", lines)
+    assert all("copies" not in answer for answer in single)
+
+
+def test_copies_outside_one_to_the_engine_limit_are_a_usage_error(sidecar, tmp_path):
+    gates = tmp_path / "gates.json"
+    gates.write_text(json.dumps({"unit": "milli", "table": [{"miss_allowed": 0.01, "cut": GATE_MILLI}]}))
+    parser = sidecar.build_parser()
+    base = ["--out-dir", str(tmp_path), "--programs", "p.json", "--qpu-gates", str(gates), "--qpu-seconds", "10",
+            "--spend-until", "2026-10-09T00:00:00Z", "--mock"]
+    assert sidecar.resolve(parser, parser.parse_args(base + ["--copies", "4"])).copies == 4
+    assert sidecar.resolve(parser, parser.parse_args(base)).copies == 1
+    for bad in ("0", str(sidecar.MAX_COPIES + 1)):
+        with pytest.raises(SystemExit):
+            sidecar.resolve(parser, parser.parse_args(base + ["--copies", bad]))
+
+
 def test_the_journal_records_each_survivor_and_the_qpu_verdict(sidecar, tmp_path):
     lines = [ready_line(), survivor_line(0, 0), survivor_line(1, 1), survivor_line(2, 2),
              survivor_line(3, 2, best=-90)]
