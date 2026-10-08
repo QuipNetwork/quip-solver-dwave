@@ -2,16 +2,21 @@
 
 import errno
 import fcntl
+import http.client
 import importlib.util
 import io
 import json
 import sys
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
 import pytest
+import requests
+import urllib3
+import urllib3.connection
 
 from quip_miner_dwave import cascade_codec, cascade_flow, regime_io, replay
 from quip_miner_dwave.ocean import SampleResult
@@ -89,11 +94,16 @@ class EventLog:
             assert self._changed.wait_for(lambda: self.kinds.count(kind) >= count, timeout=5), (kind, self.kinds)
 
 
-class Gate:
-    """Wraps a backend. ``sample`` waits until the test opens the gate, and the wrapper records what it saw."""
+class Dropped(Exception):
+    """What ``Gate.sample`` raises for a call whose connection broke under it."""
 
-    def __init__(self, inner, *, hold=True, fail_sample=(), zero_access=(), fail_decode=False, hang=(),
-                 connect_failures=0, rescore=None):
+
+class Gate:
+    """Wraps a backend. ``sample`` waits until the test opens the gate, and the wrapper records what it saw. Each
+    entry of ``drop_sample`` breaks the connection under one call of its job."""
+
+    def __init__(self, inner, *, hold=True, fail_sample=(), drop_sample=(), zero_access=(), fail_decode=False,
+                 hang=(), connect_failures=0, rescore=None):
         self.inner = inner
         self.shape = inner.shape
         self.opened = threading.Event()
@@ -103,6 +113,7 @@ class Gate:
         self.calls: list[str] = []
         self.live = self.peak = 0
         self.fail_sample, self.zero_access, self.fail_decode = set(fail_sample), set(zero_access), fail_decode
+        self.drops = Counter(drop_sample)
         self.hang, self.hung = set(hang), threading.Event()  # these calls wait for ``hung``, which the test sets last
         self.connects, self.connect_failures = 0, connect_failures  # the first connections raise, as an offline solver
         self.rescore_with = rescore
@@ -131,10 +142,20 @@ class Gate:
                 assert self.hung.wait(10), "the test never released the hung call"
             if job.id in self.fail_sample:
                 raise RuntimeError(f"the solver is offline for {job.id}")
+            with self._lock:
+                drop = self.drops[job.id] > 0
+                if drop:
+                    self.drops[job.id] -= 1
+            if drop:
+                raise Dropped(f"the server closed the connection under {job.id}")
             return 0 if job.id in self.zero_access else self.inner.sample(job)
         finally:
             with self._lock:
                 self.live -= 1
+
+    @staticmethod
+    def dropped(exc):
+        return isinstance(exc, Dropped)
 
     def decode(self, job):
         if self.fail_decode:
@@ -571,6 +592,64 @@ def test_a_failed_call_runs_its_survivor_on_gpu_256_and_keeps_the_qpu_off(sideca
     # The failed call keeps its reservation open, and the cap counts it. The call beside it was charged.
     assert regime_io.read_spend(tmp_path) == (ACCESS_US + RESERVATION_US, 1)
     assert "QPU error at sample: RuntimeError" in capsys.readouterr().err
+
+
+def test_a_call_whose_connection_broke_goes_again_once_and_the_qpu_stays_on(sidecar, tmp_path, capsys):
+    out = Output()
+    gate = Gate(sidecar.MockBackend(64), hold=False, drop_sample=["7:0"])
+
+    def feed():
+        yield ready_line()
+        yield survivor_line(0, 1)
+        out.wait_for(1)  # 7:0 comes back from its second call
+        yield survivor_line(1, 1)  # the QPU is still on, so 7:1 goes to the QPU as well
+        out.wait_for(2)
+
+    answers, events = run_sidecar(sidecar, tmp_path, feed(), backend=gate, out=out, in_flight=1, queue=0,
+                                  arms=[("qpu-cold", 1)])
+    assert {answer["id"]: answer["program"] for answer in answers} == {"7:0": "cold-1048576", "7:1": "cold-1048576"}
+    assert gate.calls == ["7:0", "7:0", "7:1"]
+    (retry,) = [e for e in events if e["type"] == "qpu_retry"]
+    assert (retry["id"], retry["nonce"], retry["arm"], retry["exception"]) == (
+        "7:0", nonce_of(1, 0), "qpu-cold", "Dropped")
+    assert "closed the connection under 7:0" in retry["message"]
+    assert not [e for e in events if e["type"] in ("qpu_error", "qpu_skip")]
+    assert regime_io.read_spend(tmp_path) == (2 * ACCESS_US, 0)  # one charge for each survivor
+    assert "QPU error" not in capsys.readouterr().err
+
+
+def test_a_call_whose_connection_breaks_twice_fails_and_turns_the_qpu_off(sidecar, tmp_path):
+    out = Output()
+    gate = Gate(sidecar.MockBackend(64), hold=False, drop_sample=["7:0", "7:0"])
+
+    def feed():
+        yield ready_line()
+        yield survivor_line(0, 1)
+        out.wait_for(1)
+
+    answers, events = run_sidecar(sidecar, tmp_path, feed(), backend=gate, out=out, in_flight=1, queue=0,
+                                  arms=[("qpu-cold", 1)])
+    assert [(answer["id"], answer["program"]) for answer in answers] == [("7:0", "gpu-256")]
+    assert gate.calls == ["7:0", "7:0"]
+    assert [e["type"] for e in events if e["type"].startswith("qpu_")] == ["qpu_retry", "qpu_error", "qpu_skip"]
+    assert regime_io.read_spend(tmp_path) == (RESERVATION_US, 1)
+
+
+def test_the_ocean_backend_counts_only_a_connection_that_broke_under_a_call_as_dropped(sidecar):
+    broke = requests.exceptions.ConnectionError(urllib3.exceptions.ProtocolError(
+        "Connection aborted.", http.client.RemoteDisconnected("Remote end closed connection without response")))
+    # The message of each of the 5 connection errors that the live run journaled on 2026-10-07.
+    assert str(broke) == "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+    reset = requests.exceptions.ConnectionError(urllib3.exceptions.ProtocolError(
+        "Connection aborted.", ConnectionResetError(errno.ECONNRESET, "Connection reset by peer")))
+    host = "na-west-1.cloud.dwavesys.com"  # nothing here opens a connection
+    refused = requests.exceptions.ConnectionError(urllib3.exceptions.MaxRetryError(
+        urllib3.HTTPSConnectionPool(host), "/sapi/v2/problems/",
+        urllib3.exceptions.NewConnectionError(urllib3.connection.HTTPSConnection(host), "Connection refused")))
+    assert sidecar.OceanBackend.dropped(broke) and sidecar.OceanBackend.dropped(reset)
+    assert not sidecar.OceanBackend.dropped(refused)  # no connection at all: an outage, which turns the QPU off
+    assert not sidecar.OceanBackend.dropped(RuntimeError("the solver went offline"))
+    assert not sidecar.MockBackend.dropped(broke)
 
 
 def test_a_failed_call_sends_the_queued_survivors_to_gpu_256(sidecar, tmp_path):

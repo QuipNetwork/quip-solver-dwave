@@ -14,7 +14,8 @@ Give each card its own out-dir and its own share of the budget.
 
 A line that the sidecar cannot take ends the run, because the miner and the sidecar then disagree. A failure of the
 QPU side does not. The survivor runs on ``gpu-256``, a ``qpu_error`` event says why, and the QPU stays off until a
-retry of the connection works. The cap and a mismatch of the lane order switch it off for good.
+retry of the connection works. A call whose connection broke under it first goes again once, with a ``qpu_retry``
+event. The cap and a mismatch of the lane order switch the QPU off for good.
 """
 
 from __future__ import annotations
@@ -270,7 +271,8 @@ class MockBackend:
     ``(spins, energies_milli)``, and the sidecar charges the access time before it decodes. ``rescore(job)`` scores the
     lanes of the survivor on its model, in milli energy, or returns ``None`` when the backend has no model.
     ``shape`` is the ``(nodes, edges)`` of the model that the backend samples, or ``None`` when it takes the model of
-    the miner as it is.
+    the miner as it is. ``dropped(exc)`` says whether a failed ``sample`` lost its connection under the call, which
+    the sidecar sends again once.
 
     With a ``spec`` the mock makes the same two checks as a live run: it has the ``shape`` of the spec, and it rescores
     the lanes on the model of the nonce. A mock run against the real miner then proves the model and the lane order at
@@ -296,6 +298,10 @@ class MockBackend:
 
     def decode(self, job: Job) -> Tuple[np.ndarray, np.ndarray]:
         return job.answer
+
+    @staticmethod
+    def dropped(exc: BaseException) -> bool:
+        return False
 
     def rescore(self, job: Job) -> Optional[np.ndarray]:
         return None if self.spec is None else rescore_lanes(self.spec, job)
@@ -373,6 +379,16 @@ class OceanBackend:
             self._close_if_idle(session)
         job.answer = (h, j, result)
         return int(result.device_access_time_us)
+
+    @staticmethod
+    def dropped(exc: BaseException) -> bool:
+        """The connection broke under the call: urllib3's ``ProtocolError`` ("Connection aborted."), as when the server
+        closed a pooled connection that sat idle between calls. A connection that cannot open is an outage instead."""
+        import requests
+        import urllib3
+
+        return isinstance(exc, requests.exceptions.ConnectionError) and any(
+            isinstance(arg, urllib3.exceptions.ProtocolError) for arg in exc.args)
 
     def decode(self, job: Job) -> Tuple[np.ndarray, np.ndarray]:
         h, j, result = job.answer
@@ -781,9 +797,17 @@ class Sidecar:
         self._skip(Skip(job, "error", (job.stage, exc)))
 
     def _serve(self, job: Job) -> None:
-        """One QPU call: the call, its charge, the QPU gate, and the answer."""
+        """One QPU call: the call, its charge, the QPU gate, and the answer. A call whose connection broke goes again
+        once, with a ``qpu_retry`` event, before it counts as a failure."""
         config = self.config
-        access_us = int(self.backend.sample(job))
+        try:
+            access_us = int(self.backend.sample(job))
+        except Exception as exc:
+            if self._abandoned or not self.backend.dropped(exc):
+                raise
+            self.journal.event("qpu_retry", id=job.id, nonce=job.nonce, arm=job.arm, exception=type(exc).__name__,
+                               message=str(exc))
+            access_us = int(self.backend.sample(job))
         # SAPI sends no timing record when something is wrong. The reservation stands in for the access time, so that
         # the cap has something to count, and the call counts as a failure.
         charge_us = access_us if access_us > 0 else self._reservation_us
