@@ -7,11 +7,11 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-09-11T23:40:12.389212893Z"
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
 exclude-newer-span = "P1W"
 
 [options.exclude-newer-package]
-quip-solver-core = "2026-09-19T00:00:00Z"
+quip-solver-core = "2026-10-13T00:00:00Z"
 
 [[package]]
 name = "annotated-types"
@@ -1528,17 +1528,17 @@ wheels = [
 
 [[package]]
 name = "quip-solver-core"
-version = "0.0.2rc1"
+version = "0.0.4rc1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "grpcio" },
     { name = "protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b9/fc/5b4dacdc24c7337a39983df646a43992957ea733fc9c4d63b24d130d5ee6/quip_solver_core-0.0.2rc1.tar.gz", hash = "sha256:c3f052aca0293db1d1b2e57b458b71793f704b5b049dd3fe9d5b1dfd79cbd288", size = 89576, upload-time = "2026-09-18T22:46:00.532Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5f/0f/6ad38d5b06aba1c26b41188de7d31e04dd7edd8797bca5c76c8bcfbc39bd/quip_solver_core-0.0.4rc1.tar.gz", hash = "sha256:0732d785256aca847844f8ea4711aa524f701c5c7578d8f4e18bacedbcc04b1a", size = 138413, upload-time = "2026-10-12T03:23:46.707Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6e/b7/6d4f5f2425ebcb20f82543512a6d14bc2473a85549548ae3a1cd14b5891e/quip_solver_core-0.0.2rc1-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:c0841aa561a47eee064dc89e196d11590e53ded63006c3b425d1437a1185d905", size = 250587, upload-time = "2026-09-18T22:45:56.721Z" },
-    { url = "https://files.pythonhosted.org/packages/33/44/55652ce87879f3b362a61237acdddd2eaf32f4a962b2707027994983afc4/quip_solver_core-0.0.2rc1-cp311-abi3-manylinux_2_34_aarch64.whl", hash = "sha256:de2fed90d3750f26efe5b3ccc9d07702050da8ee0477af9c0ba7b2f0da9fc60b", size = 274230, upload-time = "2026-09-18T22:45:57.976Z" },
-    { url = "https://files.pythonhosted.org/packages/e5/28/1e267fa3d8913f4fd3e28a97ced646007655e96690bb781b1dfcc5db9542/quip_solver_core-0.0.2rc1-cp311-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:c5ed050ce47bd3e819bee4914a917fe89417a17fa4bf6e3ab1c4f6d7674a66af", size = 277274, upload-time = "2026-09-18T22:45:59.142Z" },
+    { url = "https://files.pythonhosted.org/packages/ee/aa/eb682ae826a2749d4af0d0f9ec7bceb29049f89ca0b21540e3c7775ab4d2/quip_solver_core-0.0.4rc1-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:e91031b1dee71b1c9387006f347fe1011470610aec0121391dab5c716b36928f", size = 253106, upload-time = "2026-10-12T03:23:43.382Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/29/c4f7333635b3c4e372f34f831760d26354204acb08f262aa8d9b9ce86ece/quip_solver_core-0.0.4rc1-cp311-abi3-manylinux_2_34_aarch64.whl", hash = "sha256:af89237f1628f5a93cc6a55b607ad5751f055e57cac546b5274f523c6a0d9303", size = 276805, upload-time = "2026-10-12T03:23:44.689Z" },
+    { url = "https://files.pythonhosted.org/packages/07/44/390e383783d5e95f60e764363c7617a42bbd07c0373a1d70d9ee87305e43/quip_solver_core-0.0.4rc1-cp311-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:71c8c9b956ecca2edd571554bf46e963cbf028ba4758345bc1c74fca723b2be5", size = 279610, upload-time = "2026-10-12T03:23:45.631Z" },
 ]
 
 [[package]]
@@ -1563,7 +1563,7 @@ requires-dist = [
     { name = "hypothesis", marker = "extra == 'dev'" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
-    { name = "quip-solver-core", specifier = "==0.0.2rc1" },
+    { name = "quip-solver-core", specifier = "==0.0.4rc1" },
 ]
 provides-extras = ["dev"]
 
@@ -1595,7 +1595,7 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -1669,7 +1669,7 @@ resolution-markers = [
     "python_full_version >= '3.12'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7e/74/66de6258867beb2ef08f35f9f2ac017a52cacd5081714d239ff1a442d458/scipy-1.18.1.tar.gz", hash = "sha256:52c4b7422442aba924d03ad4019852b08a92e64ea187b933135687bfe2747307", size = 30781235, upload-time = "2026-08-21T23:28:50.599Z" }
 wheels = [

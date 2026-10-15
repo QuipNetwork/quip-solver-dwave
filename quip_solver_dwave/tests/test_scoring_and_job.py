@@ -32,8 +32,10 @@ def test_malformed_and_expired_rejects():
         kind=miner_pb2.ISING_SAMPLE,
         deadline_ms=int(time.time() * 1000) + 60_000,
         ising=miner_pb2.IsingProblem(
-            h_milli_le32=b"\x01\x02\x03",
-            j_milli_le32=wire.encode_i32_le([500]),
+            encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+            scale=1000,
+            h=b"\x01\x02\x03",
+            j=wire.encode_i32_le([500]),
             edges=miner_pb2.EdgeList(u=[0], v=[1]),
             num_reads=1,
         ),
@@ -49,8 +51,10 @@ def test_malformed_and_expired_rejects():
         kind=miner_pb2.ISING_SAMPLE,
         deadline_ms=int(time.time() * 1000) - 60_000,
         ising=miner_pb2.IsingProblem(
-            h_milli_le32=wire.encode_i32_le([1000, -1000]),
-            j_milli_le32=wire.encode_i32_le([500]),
+            encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+            scale=1000,
+            h=wire.encode_i32_le([1000, -1000]),
+            j=wire.encode_i32_le([500]),
             edges=miner_pb2.EdgeList(u=[0], v=[1]),
             num_reads=1,
         ),
@@ -72,8 +76,10 @@ def test_oversized_job_rejects_too_large():
         kind=miner_pb2.ISING_SAMPLE,
         deadline_ms=int(time.time() * 1000) + 60_000,
         ising=miner_pb2.IsingProblem(
-            h_milli_le32=wire.encode_i32_le([0] * n),
-            j_milli_le32=b"",
+            encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+            scale=1000,
+            h=wire.encode_i32_le([0] * n),
+            j=b"",
             edges=miner_pb2.EdgeList(u=[], v=[]),
             num_reads=1,
         ),
@@ -99,8 +105,10 @@ def test_malformed_j_rejects():
         kind=miner_pb2.ISING_SAMPLE,
         deadline_ms=int(time.time() * 1000) + 60_000,
         ising=miner_pb2.IsingProblem(
-            h_milli_le32=wire.encode_i32_le([1000, -1000]),
-            j_milli_le32=b"\x01\x02\x03",
+            encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+            scale=1000,
+            h=wire.encode_i32_le([1000, -1000]),
+            j=b"\x01\x02\x03",
             num_reads=1,
         ),
     )
@@ -118,8 +126,10 @@ def test_valid_job_produces_result_with_access_time():
         kind=miner_pb2.ISING_SAMPLE,
         deadline_ms=int(time.time() * 1000) + 3_600_000,
         ising=miner_pb2.IsingProblem(
-            h_milli_le32=wire.encode_i32_le([1000, -1000]),
-            j_milli_le32=wire.encode_i32_le([500]),
+            encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+            scale=1000,
+            h=wire.encode_i32_le([1000, -1000]),
+            j=wire.encode_i32_le([500]),
             edges=miner_pb2.EdgeList(u=[0], v=[1]),
             num_reads=1,
         ),
@@ -136,7 +146,7 @@ def test_valid_job_produces_result_with_access_time():
     # returned spins; a divergence means the problem handed to the sampler is
     # not the problem the job described.
     sol = result.solutions[0]
-    spins = wire.decode_spins(sol.spins_bytes)
+    spins = wire.decode_spins_packed(sol.spins, 2)
     expected = scoring.energy_milli(
         spins, [1.0, -1.0], [0.5], [(0, 1)]
     )
@@ -155,8 +165,10 @@ def test_sparse_session_topology_scores_edges():
         deadline_ms=int(time.time() * 1000) + 3_600_000,
         ising=miner_pb2.IsingProblem(
             # No inline EdgeList -> resolve against the session topology.
-            h_milli_le32=wire.encode_i32_le([1000, -1000]),
-            j_milli_le32=wire.encode_i32_le([500]),
+            encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+            scale=1000,
+            h=wire.encode_i32_le([1000, -1000]),
+            j=wire.encode_i32_le([500]),
             num_reads=1,
         ),
     )
@@ -165,7 +177,7 @@ def test_sparse_session_topology_scores_edges():
     )
     result = next(m.result for m in msgs if m.WhichOneof("msg") == "result")
     sol = result.solutions[0]
-    spins = wire.decode_spins(sol.spins_bytes)
+    spins = wire.decode_spins_packed(sol.spins, 2)
     # Golden scorer indexes by spin position: edge (10,20) -> positions (0,1).
     expected = scoring.energy_milli(spins, [1.0, -1.0], [0.5], [(0, 1)])
     assert sol.energy_milli == expected
@@ -182,7 +194,9 @@ def test_unsupported_kind():
         kind=miner_pb2.GATE_CIRCUIT,
         deadline_ms=int(time.time() * 1000) + 60_000,
         ising=miner_pb2.IsingProblem(
-            h_milli_le32=wire.encode_i32_le([1000]),
+            encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+            scale=1000,
+            h=wire.encode_i32_le([1000]),
         ),
     )
     msgs = handle_job(job, sampler, session_nodes=[], session_edges=[])
@@ -197,8 +211,10 @@ def _hash_job(job_id: bytes, topology_hash: bytes) -> "miner_pb2.Job":
         deadline_ms=int(time.time() * 1000) + 60_000,
         ising=miner_pb2.IsingProblem(
             topology_hash=topology_hash,
-            h_milli_le32=wire.encode_i32_le([1000, -1000]),
-            j_milli_le32=wire.encode_i32_le([500]),
+            encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+            scale=1000,
+            h=wire.encode_i32_le([1000, -1000]),
+            j=wire.encode_i32_le([500]),
             num_reads=1,
         ),
     )
@@ -254,8 +270,10 @@ def test_set_target_num_reads_override_is_honored():
         deadline_ms=int(time.time() * 1000) + 60_000,
         ising=miner_pb2.IsingProblem(
             edges=miner_pb2.EdgeList(u=[0], v=[1]),
-            h_milli_le32=wire.encode_i32_le([1000, -1000]),
-            j_milli_le32=wire.encode_i32_le([500]),
+            encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+            scale=1000,
+            h=wire.encode_i32_le([1000, -1000]),
+            j=wire.encode_i32_le([500]),
             num_reads=0,  # unset -> falls through to SetTarget
         ),
     )
@@ -316,8 +334,10 @@ def _make_job(job_id: bytes, *, anneal_time_us: int = 0) -> "miner_pb2.Job":
         deadline_ms=int(time.time() * 1000) + 60_000,
         ising=miner_pb2.IsingProblem(
             edges=miner_pb2.EdgeList(u=[0], v=[1]),
-            h_milli_le32=wire.encode_i32_le([1000, -1000]),
-            j_milli_le32=wire.encode_i32_le([500]),
+            encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+            scale=1000,
+            h=wire.encode_i32_le([1000, -1000]),
+            j=wire.encode_i32_le([500]),
             num_reads=1,
             anneal_time_us=anneal_time_us,
         ),
@@ -334,8 +354,10 @@ def _topology_job(
         kind=miner_pb2.ISING_SAMPLE,
         deadline_ms=int(time.time() * 1000) + 60_000,
         ising=miner_pb2.IsingProblem(
-            h_milli_le32=wire.encode_i32_le(h_values),
-            j_milli_le32=wire.encode_i32_le(
+            encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+            scale=1000,
+            h=wire.encode_i32_le(h_values),
+            j=wire.encode_i32_le(
                 [500] if j_values is None else j_values
             ),
             num_reads=1,
@@ -418,8 +440,10 @@ def test_sampler_exception_rejects_overloaded_with_refund():
         kind=miner_pb2.ISING_SAMPLE,
         deadline_ms=int(time.time() * 1000) + 60_000,
         ising=miner_pb2.IsingProblem(
-            h_milli_le32=wire.encode_i32_le([1000, -1000]),
-            j_milli_le32=wire.encode_i32_le([500]),
+            encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+            scale=1000,
+            h=wire.encode_i32_le([1000, -1000]),
+            j=wire.encode_i32_le([500]),
             edges=miner_pb2.EdgeList(u=[0], v=[1]),
             num_reads=1,
         ),
@@ -447,8 +471,10 @@ def test_solver_offline_raises_solver_unavailable_instead_of_a_refund():
         kind=miner_pb2.ISING_SAMPLE,
         deadline_ms=int(time.time() * 1000) + 60_000,
         ising=miner_pb2.IsingProblem(
-            h_milli_le32=wire.encode_i32_le([1000, -1000]),
-            j_milli_le32=wire.encode_i32_le([500]),
+            encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+            scale=1000,
+            h=wire.encode_i32_le([1000, -1000]),
+            j=wire.encode_i32_le([500]),
             edges=miner_pb2.EdgeList(u=[0], v=[1]),
             num_reads=1,
         ),
@@ -476,8 +502,10 @@ def test_result_meta_echoes_the_resolved_sweep_budget():
             kind=miner_pb2.ISING_SAMPLE,
             deadline_ms=int(time.time() * 1000) + 60_000,
             ising=miner_pb2.IsingProblem(
-                h_milli_le32=wire.encode_i32_le([1000, -1000]),
-                j_milli_le32=wire.encode_i32_le([500]),
+                encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+                scale=1000,
+                h=wire.encode_i32_le([1000, -1000]),
+                j=wire.encode_i32_le([500]),
                 edges=miner_pb2.EdgeList(u=[0], v=[1]),
                 num_reads=1,
                 num_sweeps=num_sweeps,
@@ -550,8 +578,10 @@ def test_inline_edgelist_job_never_trips_h_length_check():
         deadline_ms=int(time.time() * 1000) + 60_000,
         ising=miner_pb2.IsingProblem(
             edges=miner_pb2.EdgeList(u=[0], v=[1]),
-            h_milli_le32=wire.encode_i32_le([1000, -1000]),
-            j_milli_le32=wire.encode_i32_le([500]),
+            encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+            scale=1000,
+            h=wire.encode_i32_le([1000, -1000]),
+            j=wire.encode_i32_le([500]),
             num_reads=1,
         ),
     )

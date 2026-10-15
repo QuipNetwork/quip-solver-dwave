@@ -10,7 +10,9 @@ from quip_solver_dwave.session_loop import (
     log_attempt,
     log_progress,
 )
-from quip_solver_dwave import ALGORITHM, BACKEND, FEATURES, MAX_EDGES, MAX_NODES
+from quip_solver_core import miner_pb2
+
+from quip_solver_dwave import FEATURES, MAX_EDGES, MAX_NODES
 
 
 def test_mempool_generation_is_never_abandoned():
@@ -35,14 +37,22 @@ def test_capabilities_message_matches_advertised_caps():
     # Must answer a GetCapabilities without touching the device, so it is a
     # pure function of the same static numbers Hello and --capabilities use.
     caps = capabilities_message()
-    assert caps.backend == BACKEND
-    assert caps.algorithm == ALGORITHM
+    assert caps.backend == miner_pb2.BACKEND_DWAVE_QPU
+    assert caps.algorithm == miner_pb2.ALGORITHM_QUANTUM_ANNEAL
     assert list(caps.supported_kinds) == [1]  # ISING_SAMPLE
     assert caps.max_nodes == MAX_NODES
     assert caps.max_edges == MAX_EDGES
     assert list(caps.features) == list(FEATURES)
-    assert caps.protocol_version == 1
+    assert caps.protocol_version == 2
     assert caps.stream_width == 1
+    assert list(caps.encodings) == [miner_pb2.COEFFICIENT_ENCODING_I32]
+    assert not caps.HasField("native_topology_hash")
+
+
+def test_capabilities_carry_the_native_topology_hash_once_known():
+    # v2 moved the hash from Hello into Capabilities, so Hello.capabilities
+    # and the GetCapabilities reply both carry it.
+    assert capabilities_message(b"\x01" * 32).native_topology_hash == b"\x01" * 32
 
 
 # First 8 bytes of a longer job id, matching the observed CPU miner line.

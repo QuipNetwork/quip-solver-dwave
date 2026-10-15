@@ -21,8 +21,6 @@ import grpc
 from quip_solver_core import miner_pb2, miner_pb2_grpc, session as session_sdk
 
 from quip_solver_dwave import (
-    ALGORITHM,
-    BACKEND,
     EXIT_CLEAN,
     EXIT_CONFIG_INVALID,
     EXIT_INTERNAL_FATAL,
@@ -623,24 +621,32 @@ def _is_abandoned(generation: int, watermark: int) -> bool:
     return generation != 0 and generation <= watermark
 
 
-def capabilities_message() -> miner_pb2.Capabilities:
+def capabilities_message(
+    native_topology_hash: Optional[bytes] = None,
+) -> miner_pb2.Capabilities:
     """Build the ``Capabilities`` message: what this backend supports.
 
     Must answer without touching the device, so it is a pure function of the
-    same static numbers ``Hello`` advertises. ``--capabilities`` prints the
-    protobuf JSON of this exact message and the in-session ``GetCapabilities``
-    reply wraps it, so the two answers cannot drift apart (SPEC section 8).
+    static numbers plus the chip's topology hash once a connected sampler
+    knows it. ``Hello.capabilities``, the in-session ``GetCapabilities`` reply
+    and ``--capabilities`` all come from here, so the answers cannot drift
+    apart (SPEC section 8). Only ``I32`` coefficients are advertised: the
+    job path decodes nothing else.
     """
-    return miner_pb2.Capabilities(
-        backend=BACKEND,
-        algorithm=ALGORITHM,
+    caps = miner_pb2.Capabilities(
+        backend=miner_pb2.BACKEND_DWAVE_QPU,
+        algorithm=miner_pb2.ALGORITHM_QUANTUM_ANNEAL,
         supported_kinds=[miner_pb2.ISING_SAMPLE],
         max_nodes=MAX_NODES,
         max_edges=MAX_EDGES,
         features=list(FEATURES),
         protocol_version=session_sdk.PROTOCOL_VERSION,
         stream_width=1,
+        encodings=[miner_pb2.COEFFICIENT_ENCODING_I32],
     )
+    if native_topology_hash:
+        caps.native_topology_hash = native_topology_hash
+    return caps
 
 
 def _unix_target(uri: str) -> str:
@@ -668,22 +674,15 @@ def run_session(
 ) -> int:
     """Run one miner session; return a process exit code."""
     target = _unix_target(coordinator_uri)
+    # One message for the whole session: GetCapabilities must repeat what
+    # Hello advertised, even after a session Topology lets the sampler hash
+    # its live graph.
+    session_caps = capabilities_message(sampler.native_topology_hash)
     try:
-        hello = session_sdk.build_hello(
-            miner_id,
-            BACKEND,
-            ALGORITHM,
-            [miner_pb2.ISING_SAMPLE],
-            MAX_NODES,
-            MAX_EDGES,
-            features=list(FEATURES),
-        )
+        hello = session_sdk.build_hello(miner_id, session_caps)
     except session_sdk.MissingToken:
         logger.error("QUIP_SESSION_TOKEN unset")
         return EXIT_TOKEN_REJECTED
-
-    if sampler.native_topology_hash:
-        hello.native_topology_hash = sampler.native_topology_hash
 
     out_q: queue.Queue = queue.Queue()
     # Pre-buffer Hello so the coordinator handshake has something immediately.
@@ -974,19 +973,23 @@ def run_session(
             last_activity = time.monotonic()
             which = cm.WhichOneof("msg")
             if which == "welcome":
-                ver = cm.welcome.protocol_version
-                if ver not in (0, 1):
-                    logger.error("bad Welcome protocol_version=%s", ver)
+                try:
+                    session_sdk.check_welcome(cm.welcome)
+                except session_sdk.BadWelcome as exc:
+                    # A coordinator on another protocol version is a
+                    # configuration error, not a crash: exit 64, as the Rust
+                    # session does.
+                    logger.error("%s", exc)
                     out_q.put(
                         miner_pb2.MinerMsg(
                             fatal=miner_pb2.Fatal(
-                                exit_code=EXIT_INTERNAL_FATAL,
-                                reason="bad welcome protocol_version",
+                                exit_code=EXIT_CONFIG_INVALID,
+                                reason=str(exc),
                                 restart_required=False,
                             )
                         )
                     )
-                    exit_code = EXIT_INTERNAL_FATAL
+                    exit_code = EXIT_CONFIG_INVALID
                     break
             elif which == "configure":
                 config = session_sdk.session_config_from_configure(
@@ -1352,7 +1355,7 @@ def run_session(
                     watermark = cancel_watermark
                 out_q.put(_status(miner_id, done, abandoned=watermark))
             elif which == "get_capabilities":
-                out_q.put(miner_pb2.MinerMsg(capabilities=capabilities_message()))
+                out_q.put(miner_pb2.MinerMsg(capabilities=session_caps))
             elif which == "shutdown":
                 grace_ms = cm.shutdown.grace_ms or 5000
                 break

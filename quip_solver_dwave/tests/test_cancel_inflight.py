@@ -169,8 +169,10 @@ def _job(job_id: bytes, generation: int = 7):
         generation=generation,
         deadline_ms=int(time.time() * 1000) + 3_600_000,
         ising=miner_pb2.IsingProblem(
-            h_milli_le32=wire.encode_i32_le([1000, -1000]),
-            j_milli_le32=wire.encode_i32_le([500]),
+            encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+            scale=1000,
+            h=wire.encode_i32_le([1000, -1000]),
+            j=wire.encode_i32_le([500]),
             edges=miner_pb2.EdgeList(u=[0], v=[1]),
             num_reads=1,
         ),

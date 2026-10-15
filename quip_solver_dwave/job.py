@@ -23,9 +23,23 @@ def now_unix_ms() -> int:
     return int(time.time() * 1000)
 
 
-def decode_milli_f64(raw: bytes) -> List[float]:
-    """Decode little-endian i32 milli array to floats. Raises ValueError if bad."""
-    return [v / 1000.0 for v in wire.decode_i32_le(raw)]
+def decode_coefficients(raw: bytes, scale: int) -> List[float]:
+    """Decode one I32 coefficient array at ``scale`` into float units.
+
+    Each element is ``value / scale`` units, and it must land exactly on a
+    milli: the coordinator scores in i32 milli, so a value off that grid
+    would be sampled as one problem and scored as another.
+
+    Raises:
+        ValueError: A partial element, or a value that is not exact i32 milli.
+    """
+    out: List[float] = []
+    for value in wire.decode_i32_le(raw):
+        milli, remainder = divmod(value * 1000, scale)
+        if remainder or not -(2**31) <= milli < 2**31:
+            raise ValueError(f"coefficient {value}/{scale} is not exact i32 milli")
+        out.append(milli / 1000.0)
+    return out
 
 
 def edges_of(ising: miner_pb2.IsingProblem) -> List[Tuple[int, int]]:
@@ -54,7 +68,7 @@ def resolve_graph(
 
 
 def spins_to_bytes(spins: Sequence[int]) -> bytes:
-    return wire.encode_spins(list(spins))
+    return bytes(wire.encode_spins_packed(list(spins)))
 
 
 def sample_dict_to_vector(
@@ -138,13 +152,13 @@ def _validate_job(
 
     ising = job.ising if job.HasField("ising") else miner_pb2.IsingProblem()
 
-    # MALFORMED: h or j length not a multiple of 4
+    # MALFORMED: an encoding this backend does not advertise, a zero scale, a
+    # partial element, or a value off the milli grid. Only I32 is advertised.
+    if ising.encoding != miner_pb2.COEFFICIENT_ENCODING_I32 or ising.scale == 0:
+        raise _Rejected(miner_pb2.MALFORMED)
     try:
-        h = decode_milli_f64(ising.h_milli_le32)
-    except ValueError:
-        raise _Rejected(miner_pb2.MALFORMED) from None
-    try:
-        j_vals = decode_milli_f64(ising.j_milli_le32) if ising.j_milli_le32 else []
+        h = decode_coefficients(ising.h, ising.scale)
+        j_vals = decode_coefficients(ising.j, ising.scale)
     except ValueError:
         raise _Rejected(miner_pb2.MALFORMED) from None
 
@@ -178,7 +192,7 @@ def _resolve_problem(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Resolve the job's graph and build the sampler's ``h``/``J`` mappings.
 
-    ``h_milli_le32`` and ``j_milli_le32`` are dense positional arrays over the
+    ``h`` and ``j`` are dense positional arrays over the
     resolved graph, so a length mismatch is a malformed job rather than
     something to trim to fit. Truncating would drop values the coordinator
     specified (or leave trailing nodes and edges untouched) and then report a
@@ -311,9 +325,9 @@ def _build_result(
     an integer field, so the only transform is quantizing to milli.
     """
     # One vectorised reorder from the sampler's column order into session node
-    # order, then a raw copy per read. The wire format is one signed byte per
-    # spin, which is exactly an int8 row, so nothing has to be packed by hand
-    # (test_spin_encoding pins that equivalence against wire.encode_spins).
+    # order, then one vectorised bit-pack. The wire packs node i into bit i % 8
+    # of byte i / 8, lowest bit first, with bit 1 for +1 (test_spin_encoding
+    # pins that equivalence against wire.encode_spins_packed).
     order = nodes if len(nodes) else sorted(result.variables)
     col_of = {v: i for i, v in enumerate(result.variables)}
     spins = result.spins
@@ -328,12 +342,13 @@ def _build_result(
         spins = np.hstack([spins, np.ones((spins.shape[0], 1), dtype=np.int8)])
     ordered = spins[:, idx] if idx.size else spins[:, :0]
 
+    packed = np.packbits(ordered > 0, axis=1, bitorder="little")
     solutions = [
         miner_pb2.Solution(
-            spins_bytes=row.tobytes(),
+            spins=row.tobytes(),
             energy_milli=int(round(qpu_e * 1000)),
         )
-        for row, qpu_e in zip(ordered, result.energies)
+        for row, qpu_e in zip(packed, result.energies)
     ]
 
     meta = miner_pb2.SamplerMeta(

@@ -16,7 +16,7 @@ def test_version(capsys):
     assert main(["--version"]) == EXIT_CLEAN
     out = capsys.readouterr().out
     assert "quip-dwave-qa" in out
-    assert "protocol 1" in out
+    assert "protocol 2" in out
 
 
 def test_capabilities(capsys):

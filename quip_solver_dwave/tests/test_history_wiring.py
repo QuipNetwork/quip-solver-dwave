@@ -95,8 +95,10 @@ def _job(generation: int) -> miner_pb2.CoordMsg:
             generation=generation,
             deadline_ms=int(time.time() * 1000) + 3_600_000,
             ising=miner_pb2.IsingProblem(
-                h_milli_le32=wire.encode_i32_le([1000, -1000]),
-                j_milli_le32=wire.encode_i32_le([500]),
+                encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+                scale=1000,
+                h=wire.encode_i32_le([1000, -1000]),
+                j=wire.encode_i32_le([500]),
                 edges=miner_pb2.EdgeList(u=[0], v=[1]),
                 num_reads=1,
             ),
@@ -128,7 +130,7 @@ def _run(
     sent: List = []
 
     def responses():
-        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=1))
+        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=2))
         yield _configure(usage_db)
         # Cancel(1) opens the round whose jobs carry generation 2.
         yield _cancel(1)
@@ -253,7 +255,7 @@ def test_an_abandoned_result_lands_in_wasted_jobs_not_jobs(monkeypatch, usage_db
     sent: List = []
 
     def responses():
-        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=1))
+        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=2))
         yield _configure(usage_db)
         # A qblock boundary before the job: budget pacing only grants
         # credits, and lets the gate's job check pass, once one has run.
@@ -319,7 +321,7 @@ def test_a_budget_named_after_the_recorder_exists_still_gets_a_strategy(
     sent: List = []
 
     def responses():
-        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=1))
+        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=2))
         yield _configure_without_budget(usage_db)
         yield _configure(usage_db)
         yield miner_pb2.CoordMsg(shutdown=miner_pb2.Shutdown(grace_ms=100))

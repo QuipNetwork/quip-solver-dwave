@@ -37,7 +37,7 @@ conformance:
     - python3 -m venv /opt/venv
     - /opt/venv/bin/pip install -q -e ".[dev]"
   script:
-    - cargo install --locked quip-solver-conformance --version 0.0.2-rc1
+    - cargo install --locked quip-solver-conformance --version 0.0.4-rc1
     - QUIP_SOLVER_DRIVE="$CARGO_HOME/bin/quip-solver-drive" /opt/venv/bin/pytest quip_solver_dwave/tests/test_conformance.py -v
 
 build-wheel:

@@ -12,8 +12,11 @@ import threading
 import time
 
 from google.protobuf.json_format import MessageToDict
+from quip_solver_core import session as session_sdk
 
 from quip_solver_dwave import (
+    ALGORITHM,
+    BACKEND,
     EXIT_CLEAN,
     EXIT_CONFIG_INVALID,
     EXIT_ENV_INCOMPATIBLE,
@@ -46,7 +49,7 @@ from quip_solver_dwave.session_loop import capabilities_message, run_session_syn
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="quip-dwave-qa",
-        description="QuIP D-Wave quantum-annealing miner (v0.3 protocol)",
+        description="QuIP D-Wave quantum-annealing solver (protocol version 2)",
     )
     p.add_argument("--quip-coordinator", default=None, help="unix:// path or host")
     p.add_argument("--miner-id", default="qpu-0")
@@ -189,15 +192,16 @@ def print_capabilities() -> None:
     Field names are lowerCamelCase and the output stays identical to the
     in-session ``GetCapabilities`` reply — the two are one message.
     """
-    print(
-        json.dumps(
-            MessageToDict(
-                capabilities_message(),
-                always_print_fields_with_no_presence=True,
-                preserving_proto_field_name=False,
-            )
-        )
+    payload = MessageToDict(
+        capabilities_message(),
+        always_print_fields_with_no_presence=True,
+        preserving_proto_field_name=False,
     )
+    # SPEC section 8 names the identity enums in fixed lowercase, not by
+    # their protobuf enum names.
+    payload["backend"] = BACKEND
+    payload["algorithm"] = ALGORITHM
+    print(json.dumps(payload))
 
 
 def run_check(*, force_mock: bool = False) -> int:
@@ -278,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.version:
-        print(f"quip-dwave-qa {__version__} protocol 1")
+        print(f"quip-dwave-qa {__version__} protocol {session_sdk.PROTOCOL_VERSION}")
         return EXIT_CLEAN
     if args.capabilities:
         print_capabilities()

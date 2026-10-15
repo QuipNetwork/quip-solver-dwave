@@ -44,8 +44,10 @@ def _job(**ising_fields) -> miner_pb2.Job:
         deadline_ms=int(time.time() * 1000) + 60_000,
         ising=miner_pb2.IsingProblem(
             edges=miner_pb2.EdgeList(u=[0], v=[1]),
-            h_milli_le32=wire.encode_i32_le([1000, -1000]),
-            j_milli_le32=wire.encode_i32_le([500]),
+            encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+            scale=1000,
+            h=wire.encode_i32_le([1000, -1000]),
+            j=wire.encode_i32_le([500]),
             num_reads=1,
             **ising_fields,
         ),
@@ -127,5 +129,5 @@ def test_the_mock_miner_returns_the_seeds_energy_for_a_seeded_job():
 
     result = next(r.result for r in replies if r.WhichOneof("msg") == "result")
     assert [s.energy_milli for s in result.solutions] == [-2500]
-    assert wire.decode_spins(result.solutions[0].spins_bytes) == [-1, 1]
+    assert wire.decode_spins_packed(result.solutions[0].spins, 2) == [-1, 1]
     sampler.close()

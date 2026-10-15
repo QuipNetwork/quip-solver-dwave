@@ -1,4 +1,4 @@
-"""quip-solver-dwave: D-Wave quantum-annealing miner for the v0.3 protocol.
+"""quip-solver-dwave: D-Wave quantum-annealing solver for protocol version 2.
 
 Binary entry point: ``quip-dwave-qa`` (``python -m quip_solver_dwave``).
 """
@@ -14,6 +14,8 @@ EXIT_ENV_INCOMPATIBLE = 69
 EXIT_INTERNAL_FATAL = 70
 EXIT_TOKEN_REJECTED = 77
 
+# The lowercase identity names --capabilities prints (SPEC section 8). The
+# wire carries the matching Backend and Algorithm enums.
 BACKEND = "dwave-qpu"
 ALGORITHM = "quantum-anneal"
 # Capability advertisement, shared between --capabilities (cli.py) and the
