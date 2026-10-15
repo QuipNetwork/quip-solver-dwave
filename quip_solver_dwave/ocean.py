@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 import numpy as np
 
 from quip_solver_dwave.answer import AnswerView, answer_view
-from quip_solver_dwave.qp import QpEncoder, build_submission_body
+from quip_solver_dwave.qp import OffChipError, QpEncoder, build_submission_body
 from quip_solver_dwave.defects import (
     DefectInfo,
     prepare_problem,
@@ -35,6 +35,7 @@ from quip_solver_dwave.defects import (
 )
 from quip_solver_dwave.schedule import (
     FALLBACK_ANNEAL_US,
+    ScheduleError,
     forward_schedule,
     reverse_schedule,
 )
@@ -95,10 +96,72 @@ def mock_mode_enabled() -> bool:
 
 def mock_backend() -> str:
     """Offline mock sampler backend: ``exact`` (default, brute-force — only
-    tiny problems) or ``sa`` (SimulatedAnnealingSampler — scales to realistic
-    topologies). Selected via ``QUIP_DWAVE_MOCK_BACKEND``."""
+    tiny problems), ``sa`` (SimulatedAnnealingSampler — scales to realistic
+    topologies) or ``chip`` (:func:`mock_chip`, a working graph to embed onto
+    and to refuse off-graph models against). Selected via
+    ``QUIP_DWAVE_MOCK_BACKEND``."""
     b = os.environ.get("QUIP_DWAVE_MOCK_BACKEND", "").strip().lower()
-    return "sa" if b == "sa" else "exact"
+    return b if b in ("sa", "chip") else "exact"
+
+
+# Pegasus shape of the mock chip: 680 qubits, enough to embed a complete graph
+# on 24 nodes in a fraction of a second.
+MOCK_CHIP_PEGASUS_M = 6
+
+
+def mock_chip() -> Any:
+    """An offline stand-in chip: a Pegasus working graph that answers
+    deterministically, so the same problem gives the same reads.
+
+    A real chip's labels are its own. This one numbers a native 8-cycle 0 to
+    7 and the remaining qubits after it, so a ring on nodes 0 to 7, such as
+    the ``--solve`` gate's base ring, sits on the working graph the way a
+    model built for a chip does.
+    """
+    import dwave_networkx as dnx
+    import networkx as nx
+    from dwave.system.testing import MockDWaveSampler
+
+    graph = dnx.pegasus_graph(MOCK_CHIP_PEGASUS_M)
+    cycle = next(c for c in nx.simple_cycles(graph, length_bound=8) if len(c) == 8)
+    rest = sorted(n for n in graph.nodes if n not in set(cycle))
+    graph = nx.relabel_nodes(graph, {n: i for i, n in enumerate([*cycle, *rest])})
+    return MockDWaveSampler(
+        nodelist=sorted(graph.nodes),
+        edgelist=sorted((min(u, v), max(u, v)) for u, v in graph.edges),
+        substitute_kwargs={"seed": 0},
+    )
+
+
+@dataclass
+class EmbeddingStats:
+    """How an embedded problem sat on the chip.
+
+    ``chain_break_fraction[r]`` is the fraction of chains broken in row ``r``
+    of the answer, and ``max_chain_length`` the longest chain.
+    """
+
+    chain_break_fraction: List[float]
+    max_chain_length: int
+
+
+def embedding_stats(answer: Any) -> Optional[EmbeddingStats]:
+    """Read the chain statistics an ``EmbeddingComposite`` answer carries."""
+    context = (getattr(answer, "info", None) or {}).get("embedding_context") or {}
+    embedding = context.get("embedding")
+    record = getattr(answer, "record", None)
+    if not embedding or record is None:
+        return None
+    names = record.dtype.names or ()
+    fractions = (
+        [float(f) for f in record.chain_break_fraction]
+        if "chain_break_fraction" in names
+        else [0.0] * len(record)
+    )
+    return EmbeddingStats(
+        chain_break_fraction=fractions,
+        max_chain_length=max(len(chain) for chain in embedding.values()),
+    )
 
 
 def is_solver_offline(exc: BaseException) -> bool:
@@ -163,6 +226,8 @@ class SampleResult:
     # Anneals behind each row of ``spins``: the cloud folds identical reads
     # into one row. None from a sampler double that does not say.
     occurrences: Optional[List[int]] = None
+    # Set when the problem was embedded onto the chip (--embed).
+    embedding: Optional[EmbeddingStats] = None
 
 
 class SupportsSample(Protocol):
@@ -358,6 +423,7 @@ class OceanSampler:
         submit_workers: int = 4,
         defective_qubits: Optional[Sequence[int]] = None,
         defective_edges: Optional[set] = None,
+        embed: bool = False,
     ):
         self._submit_pool = ThreadPoolExecutor(
             max_workers=max(1, submit_workers),
@@ -393,6 +459,9 @@ class OceanSampler:
         self._solver_name = solver_name
         self._region = region
         self._token = token
+        # Embed every problem onto the chip through Ocean's EmbeddingComposite
+        # instead of sampling it on the working graph as given.
+        self._embed = embed
 
         use_mock = mock if mock is not None else mock_mode_enabled()
         if sampler is not None:
@@ -400,7 +469,23 @@ class OceanSampler:
             self._is_mock = use_mock or isinstance(sampler, MockSampler)
             self._connected = True
             self._apply_native_hash()
+        elif use_mock and mock_backend() == "chip":
+            chip = mock_chip()
+            self._qpu_solver = chip
+            self._live_nodes = list(chip.nodelist)
+            self._live_edges = [(int(u), int(v)) for u, v in chip.edgelist]
+            self.sampler = self._embedding(chip)
+            self._is_mock = True
+            self._connected = True
+            logger.info("[QPU] mock chip active (QUIP_DWAVE_MOCK, backend=chip)")
+            self._apply_native_hash()
         elif use_mock:
+            if embed:
+                # A topology-free mock has no working graph to embed onto.
+                raise ValueError(
+                    "--embed needs a working graph; in mock mode set "
+                    "QUIP_DWAVE_MOCK_BACKEND=chip"
+                )
             self.sampler = MockSampler(backend=mock_backend())
             self._is_mock = True
             self._connected = True
@@ -426,10 +511,28 @@ class OceanSampler:
         """
         if self._connected:
             return
-        self.sampler = self._connect_real(self._solver_name, self._region, self._token)
+        self.sampler = self._embedding(
+            self._connect_real(self._solver_name, self._region, self._token)
+        )
         self._detect_defects()
         self._connected = True
         self._apply_native_hash()
+
+    def _embedding(self, chip: Any) -> Any:
+        """``chip`` behind Ocean's EmbeddingComposite under --embed, else as is.
+
+        Ocean's defaults choose the chain strength, the chain-break
+        resolution and the embedding timeout.
+        """
+        if not self._embed:
+            return chip
+        from dwave.system import EmbeddingComposite
+
+        return EmbeddingComposite(chip)
+
+    @property
+    def embeds(self) -> bool:
+        return self._embed
 
     def _apply_native_hash(self) -> None:
         if self._live_nodes and self._live_edges is not None:
@@ -499,6 +602,12 @@ class OceanSampler:
         """Bind the session Topology; compute defects vs live QPU if known."""
         nodes_l = [int(n) for n in nodes]
         edges_l = [(int(u), int(v)) for u, v in edges]
+        if self._embed:
+            # Under --embed the session graph is logical and every job is
+            # embedded onto the chip, so none of it is a defect to clamp.
+            self._defective_qubits = []
+            self._defective_edges = set()
+            return
         if self._live_nodes:
             live_set = set(self._live_nodes)
             self._defective_qubits = sorted(set(nodes_l) - live_set)
@@ -789,24 +898,40 @@ class OceanSampler:
         solver = getattr(self.sampler, "solver", None)
         params: Dict[str, Any] = {"num_reads": num_reads}
         # The proto's `anneal_time_us` and SAPI's schedule times are both
-        # microseconds, so no conversion is needed.
-        params.update(self._anneal_params(solver, nodes, anneal_time_us, warm_start))
+        # microseconds, so no conversion is needed. Under --embed the chip's
+        # own limits sit on the composite's child.
+        limits_from = getattr(self.sampler, "child", None) if self._embed else solver
+        params.update(
+            self._anneal_params(limits_from, nodes, anneal_time_us, warm_start)
+        )
+        if self._embed:
+            params["return_embedding"] = True
 
         if self._is_mock or solver is None:
-            # dimod samplers and injected doubles take dicts, and the problems
-            # they see are tiny. Only the cloud path is worth encoding by hand.
+            # dimod samplers, the embedding composite and injected doubles take
+            # dicts. Only the cloud path is worth encoding by hand.
+            if not self._embed:
+                self._check_on_graph(nodes, edges)
             sample_fn = getattr(self.sampler, "sample_ising", None)
             if not callable(sample_fn):
                 raise RuntimeError("sampler has no sample_ising")
-            return sample_fn(
-                {int(n): float(b) for n, b in zip(nodes, h)},
-                {
-                    (int(u), int(v)): float(b)
-                    for (u, v), b in zip(edges.tolist(), j)
-                },
-                label=label,
-                **params,
-            )
+            try:
+                return sample_fn(
+                    {int(n): float(b) for n, b in zip(nodes, h)},
+                    {
+                        (int(u), int(v)): float(b)
+                        for (u, v), b in zip(edges.tolist(), j)
+                    },
+                    label=label,
+                    **params,
+                )
+            except ValueError as exc:
+                # Ocean's embedder gives up with a bare ValueError. A model it
+                # cannot place on this chip never fits here, as an off-chip
+                # one does not without --embed.
+                if self._embed and "no embedding found" in str(exc):
+                    raise OffChipError("no embedding found for the model") from None
+                raise
 
         # Encode straight from the arrays into the solver's own ordering. The
         # Ocean path would build an h/J dict here and hand it to
@@ -820,6 +945,23 @@ class OceanSampler:
 
         computation = self._submit_encoded(solver, body, cancel_key)
         return computation
+
+    def _check_on_graph(self, nodes, edges) -> None:
+        """Refuse a model off a structured sampler's working graph.
+
+        The cloud path refuses in ``QpEncoder.plan``. A structured dimod
+        sampler, the mock chip, raises its own structure error instead, so the
+        same refusal is made here.
+        """
+        adjacency = getattr(self.sampler, "adjacency", None)
+        if adjacency is None:
+            return
+        for n in nodes:
+            if int(n) not in adjacency:
+                raise OffChipError(f"qubit {int(n)} is not on the solver")
+        for u, v in edges.tolist():
+            if int(v) not in adjacency.get(int(u), ()):
+                raise OffChipError(f"coupler ({int(u)}, {int(v)}) is not on the solver")
 
     def _submit_encoded(self, solver, body: bytes, cancel_key: Optional[bytes]):
         """Hand an encoded problem to the cloud client.
@@ -895,6 +1037,10 @@ class OceanSampler:
         wants: there is no Result to send for a generation the coordinator has
         already abandoned.
         """
+        if self._embed and warm_start is not None:
+            # A reverse anneal starts from a state of physical qubits, which an
+            # embedded problem does not have one-to-one.
+            raise ScheduleError("a warm start cannot be embedded")
         full_nodes = nodes
         nodes, h, edges, j, defect_info = self._clamp_defects(
             nodes, h, edges, j, nonce_seed, warm_start
@@ -970,4 +1116,5 @@ class OceanSampler:
             solved_on_s=solved_on_s,
             inflight_at_submit=inflight_before,
             occurrences=view.occurrences,
+            embedding=embedding_stats(raw) if self._embed else None,
         )

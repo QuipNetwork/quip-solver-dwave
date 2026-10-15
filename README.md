@@ -85,13 +85,24 @@ ledger or round strategy runs.
 
 ```sh
 quip-dwave-qa --solve < problem.json
+quip-dwave-qa --solve --embed < problem.json
 ```
 
-Node `i` of the problem is qubit `i`. The model must already sit on the chip's
-working graph; a node or coupler the chip lacks exits 65. The optional
+Node `i` of the problem is qubit `i`. Without `--embed` the model must already
+sit on the chip's working graph; a node or coupler the chip lacks exits 65. With
+`--embed`, Ocean's `EmbeddingComposite` embeds the model with its default
+chain strength, chain-break resolution and embedding timeout, and every read
+carries an `embedding` object with its chain-break fraction and the longest
+chain. A model the embedder cannot place also exits 65. The optional
 `anneal_time_us` key sets the anneal time. The SA keys `num_sweeps`,
 `sweeps_per_beta`, `beta_range` and `seed` are required by the shared schema,
 steer nothing on a QPU, and are echoed back.
+
+`--embed` applies to session mode too: every job is embedded, the session
+topology is treated as logical rather than clamped against the chip, and a job
+with a warm start is refused, since a reverse anneal needs physical qubits.
+Without the flag, a session job off the working graph is refused as
+`TOPOLOGY_MISMATCH`.
 
 **Introspection:**
 
@@ -283,7 +294,9 @@ pytest quip_solver_dwave/tests -v
 
 `test_conformance.py` runs quip-solver-core's session and `--solve` gates when
 `quip-solver-drive` is on `PATH` or named by `QUIP_SOLVER_DRIVE`, and skips
-otherwise.
+otherwise. The `--solve` gate runs on the mock chip,
+`QUIP_DWAVE_MOCK_BACKEND=chip`: an offline Pegasus working graph, with labels 0
+to 7 forming a native 8-cycle, that `--embed` can embed onto.
 
 ## License
 

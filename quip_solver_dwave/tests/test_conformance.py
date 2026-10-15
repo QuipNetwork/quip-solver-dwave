@@ -81,11 +81,15 @@ def test_conformance_against_quip_solver_drive():
 
 
 def test_solve_conformance_against_quip_solver_drive():
+    # The --solve gate runs on the mock chip: the base ring sits on its
+    # working graph, and the embed case needs a graph to be off. The exact
+    # mock has none, so it would accept the off-graph model without --embed.
     drive = _drive_bin()
     with tempfile.TemporaryDirectory(prefix="quip-dwave-solve-") as td:
         miner = _write_miner_wrapper(Path(td))
         env = os.environ.copy()
         env["QUIP_DWAVE_MOCK"] = "1"
+        env["QUIP_DWAVE_MOCK_BACKEND"] = "chip"
         proc = subprocess.run(
             [str(drive), "--solve", str(miner)],
             check=False,
@@ -98,5 +102,5 @@ def test_solve_conformance_against_quip_solver_drive():
         assert proc.returncode == 0 and "[FAIL]" not in out, (
             f"quip-solver-drive --solve returned {proc.returncode}\n{out}"
         )
-        for case in ("solve", "same-seed", "anneal-time"):
+        for case in ("solve", "same-seed", "anneal-time", "embed"):
             assert f"[pass] {case}" in out, f"{case} did not pass\n{out}"

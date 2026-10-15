@@ -26,5 +26,12 @@ MAX_NODES = 10_000
 MAX_EDGES = 100_000
 # "initial-spins" is SPEC section 3's promise that a job's start state is
 # used: this backend reverse-anneals from it (see quip_solver_dwave.warm).
-# "anneal-time" is SPEC section 2's: --solve accepts anneal_time_us.
-FEATURES = ("quantum-anneal", "native-topology", "initial-spins", "anneal-time")
+# "anneal-time" and "embed" are SPEC section 2's: --solve accepts
+# anneal_time_us, and the binary accepts --embed.
+FEATURES = (
+    "quantum-anneal",
+    "native-topology",
+    "initial-spins",
+    "anneal-time",
+    "embed",
+)

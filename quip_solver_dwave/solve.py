@@ -4,9 +4,10 @@ SPEC section 2 of quip-solver-core defines the input, the output and the exit
 codes. This mode never enters the session loop, so no coordinator, budget,
 ledger or round strategy is involved: it connects, samples once, and exits.
 
-The problem's node ``i`` is qubit ``i``. A model has to sit on the chip's
-working graph already, and one that does not is refused as capacity, as SPEC
-section 2 asks.
+The problem's node ``i`` is qubit ``i``. Without ``--embed``, a model has to
+sit on the chip's working graph already, and one that does not is refused as
+capacity, as SPEC section 2 asks. With it, Ocean embeds the model onto the
+chip and every read reports how its chains held.
 """
 
 from __future__ import annotations
@@ -249,7 +250,7 @@ def solve(problem: Problem, sampler: OceanSampler, *, started_ns: int) -> list[d
     }
     echo = _sampler_echo(problem)
     reads: list[dict[str, Any]] = []
-    for row, count in zip(rows, occurrences):
+    for index, (row, count) in enumerate(zip(rows, occurrences)):
         spins = [int(s) for s in row]
         # Rescored with the network's scorer rather than rounded from the
         # QPU's float, so the energy is exact for the spins reported.
@@ -260,6 +261,12 @@ def solve(problem: Problem, sampler: OceanSampler, *, started_ns: int) -> list[d
             "timing": timing,
             "sampler": echo,
         }
+        if result.embedding is not None:
+            read["embedding"] = {
+                "embedded": True,
+                "chain_break_fraction": result.embedding.chain_break_fraction[index],
+                "max_chain_length": result.embedding.max_chain_length,
+            }
         reads.extend([read] * count)
     return reads
 
@@ -268,6 +275,7 @@ def run_solve(
     *,
     solver_name: str | None,
     mock: bool,
+    embed: bool = False,
     stdin: IO[bytes] | None = None,
     stdout: IO[str] | None = None,
 ) -> int:
@@ -290,7 +298,11 @@ def run_solve(
         print("error: dwave-ocean-sdk is not importable", file=sys.stderr)
         return EXIT_ENV_INCOMPATIBLE
     try:
-        sampler = OceanSampler(solver_name=solver_name, mock=use_mock)
+        sampler = OceanSampler(solver_name=solver_name, mock=use_mock, embed=embed)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_CONFIG_INVALID
+    try:
         sampler.ensure_connected()
     except Exception as exc:  # noqa: BLE001 - operator-facing message, not a trace
         print(f"error: could not open the solver: {exc}", file=sys.stderr)

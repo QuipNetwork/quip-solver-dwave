@@ -38,8 +38,8 @@ conformance:
     - /opt/venv/bin/pip install -q -e ".[dev]"
   script:
     # The session gate is protocol version 2. The --solve gate's anneal-time
-    # case is on quip-solver-core's feature/qui-1633 until it is released;
-    # pin that release's version here before this branch merges.
+    # and embed cases are on quip-solver-core's feature/qui-1633 until it is
+    # released; pin that release's version here before this branch merges.
     - cargo install --locked --git https://gitlab.com/quip.network/quip-solver-core.git --branch feature/qui-1633 quip-solver-conformance
     - QUIP_SOLVER_DRIVE="$CARGO_HOME/bin/quip-solver-drive" /opt/venv/bin/pytest quip_solver_dwave/tests/test_conformance.py -v
 

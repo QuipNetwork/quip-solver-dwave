@@ -66,6 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
         "stdout, and exit; never starts a session",
     )
     p.add_argument(
+        "--embed",
+        action="store_true",
+        help="embed every problem onto the chip through Ocean's "
+        "EmbeddingComposite, in --solve and in session mode; without it a "
+        "model off the working graph is refused",
+    )
+    p.add_argument(
         "--check",
         action="store_true",
         help="verify Ocean import + D-Wave credentials, then exit",
@@ -302,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
     adopt_legacy_token_env()
 
     if args.solve:
-        return run_solve(solver_name=args.solver, mock=args.mock)
+        return run_solve(solver_name=args.solver, mock=args.mock, embed=args.embed)
 
     if args.dump_topology:
         return run_dump_topology(args)
@@ -319,7 +326,10 @@ def main(argv: list[str] | None = None) -> int:
         # Real-QPU construction does not connect; the connection is deferred
         # until the coordinator sends Configure (or --check forces it). Mock
         # mode is ready immediately.
-        sampler = OceanSampler(mock=use_mock)
+        sampler = OceanSampler(mock=use_mock, embed=args.embed)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_CONFIG_INVALID
     except Exception as exc:  # noqa: BLE001
         logging.getLogger(__name__).exception("sampler init failed: %s", exc)
         return EXIT_ENV_INCOMPATIBLE
