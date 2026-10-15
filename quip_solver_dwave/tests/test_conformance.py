@@ -78,3 +78,25 @@ def test_conformance_against_quip_solver_drive():
         assert proc.returncode == 0 and "[FAIL]" not in out, (
             f"quip-solver-drive returned {proc.returncode}\n{out}"
         )
+
+
+def test_solve_conformance_against_quip_solver_drive():
+    drive = _drive_bin()
+    with tempfile.TemporaryDirectory(prefix="quip-dwave-solve-") as td:
+        miner = _write_miner_wrapper(Path(td))
+        env = os.environ.copy()
+        env["QUIP_DWAVE_MOCK"] = "1"
+        proc = subprocess.run(
+            [str(drive), "--solve", str(miner)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            env=env,
+        )
+        out = (proc.stdout or "") + (proc.stderr or "")
+        assert proc.returncode == 0 and "[FAIL]" not in out, (
+            f"quip-solver-drive --solve returned {proc.returncode}\n{out}"
+        )
+        for case in ("solve", "same-seed", "anneal-time"):
+            assert f"[pass] {case}" in out, f"{case} did not pass\n{out}"

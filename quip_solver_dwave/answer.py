@@ -25,7 +25,8 @@ class AnswerView:
     """One finished job's answer, in the form the miner actually uses.
 
     ``spins`` is ``(reads, len(variables))`` of int8 normalised to +1/-1, and
-    ``variables[i]`` is the qubit label of column ``i``.
+    ``variables[i]`` is the qubit label of column ``i``. ``occurrences[r]`` is
+    how many anneals returned row ``r``.
     """
 
     spins: np.ndarray
@@ -33,6 +34,7 @@ class AnswerView:
     energies: List[float]
     reads: int
     access_time_us: int
+    occurrences: List[int]
 
 
 def _access_time_us(timing: Any) -> int:
@@ -90,15 +92,16 @@ def answer_view(raw: Any) -> AnswerView:
     # num_occurrences, so the row count is distinct solutions rather than
     # anneals performed. Offline samplers do not aggregate, where the sum
     # degrades to the row count anyway.
-    reads = (
-        int(sum(int(o) for o in occurrences))
+    occurrence_list = (
+        [int(o) for o in occurrences]
         if occurrences is not None
-        else len(energy_list)
+        else [1] * len(energy_list)
     )
     return AnswerView(
         spins=spins,
         variables=[int(v) for v in variables],
         energies=energy_list,
-        reads=reads,
+        reads=sum(occurrence_list),
         access_time_us=_access_time_us(timing),
+        occurrences=occurrence_list,
     )

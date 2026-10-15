@@ -78,6 +78,21 @@ quip-dwave-qa --quip-coordinator unix:///run/quip/coord.sock
 `drive` harness pointed at the `quip-dwave-qa` entry point — `--source random`
 for golden-drawn problems, `--source list <jsonl>` for a fixed replay.
 
+**One-shot solve** (no coordinator). `--solve` reads one problem as JSON on
+stdin and writes every read as JSON on stdout, as section 2 of
+quip-solver-core's SPEC.md defines it. It never starts a session, so no budget,
+ledger or round strategy runs.
+
+```sh
+quip-dwave-qa --solve < problem.json
+```
+
+Node `i` of the problem is qubit `i`. The model must already sit on the chip's
+working graph; a node or coupler the chip lacks exits 65. The optional
+`anneal_time_us` key sets the anneal time. The SA keys `num_sweeps`,
+`sweeps_per_beta`, `beta_range` and `seed` are required by the shared schema,
+steer nothing on a QPU, and are echoed back.
+
 **Introspection:**
 
 ```sh
@@ -265,6 +280,10 @@ Three reasons predate the strategy and still appear where it plays no part: `bud
 pip install -e ".[dev]"
 pytest quip_solver_dwave/tests -v
 ```
+
+`test_conformance.py` runs quip-solver-core's session and `--solve` gates when
+`quip-solver-drive` is on `PATH` or named by `QUIP_SOLVER_DRIVE`, and skips
+otherwise.
 
 ## License
 

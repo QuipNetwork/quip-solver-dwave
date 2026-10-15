@@ -312,6 +312,29 @@ def _sampling_params(
     return num_reads, anneal_time_us, num_sweeps
 
 
+def spins_in_node_order(
+    nodes: "np.ndarray | Sequence[int]", result: SampleResult
+) -> np.ndarray:
+    """``result.spins`` reordered from the sampler's columns into ``nodes``.
+
+    One vectorised fancy-index rather than a dict per read. With no ``nodes``
+    the order is the sampler's labels, sorted.
+    """
+    order = nodes if len(nodes) else sorted(result.variables)
+    col_of = {v: i for i, v in enumerate(result.variables)}
+    spins = result.spins
+    n_cols = spins.shape[1]
+    # A node the sampler never reported reads as +1, matching the dict path's
+    # `sample.get(n, 1)`. Point those at one appended constant column so the
+    # reorder stays a single fancy-index.
+    idx = np.fromiter(
+        (col_of.get(int(n), n_cols) for n in order), dtype=np.intp, count=len(order)
+    )
+    if idx.size and idx.max() == n_cols:
+        spins = np.hstack([spins, np.ones((spins.shape[0], 1), dtype=np.int8)])
+    return spins[:, idx] if idx.size else spins[:, :0]
+
+
 def _build_result(
     job_id: bytes,
     nodes: "np.ndarray | Sequence[int]",
@@ -325,24 +348,11 @@ def _build_result(
     energy regardless, so it re-scores whatever it accepts. ``energy_milli`` is
     an integer field, so the only transform is quantizing to milli.
     """
-    # One vectorised reorder from the sampler's column order into session node
-    # order, then one vectorised bit-pack. The wire packs node i into bit i % 8
-    # of byte i / 8, lowest bit first, with bit 1 for +1 (test_spin_encoding
-    # pins that equivalence against wire.encode_spins_packed).
-    order = nodes if len(nodes) else sorted(result.variables)
-    col_of = {v: i for i, v in enumerate(result.variables)}
-    spins = result.spins
-    n_cols = spins.shape[1]
-    # A node the sampler never reported reads as +1, matching the dict path's
-    # `sample.get(n, 1)`. Point those at one appended constant column so the
-    # reorder stays a single fancy-index.
-    idx = np.fromiter(
-        (col_of.get(int(n), n_cols) for n in order), dtype=np.intp, count=len(order)
-    )
-    if idx.size and idx.max() == n_cols:
-        spins = np.hstack([spins, np.ones((spins.shape[0], 1), dtype=np.int8)])
-    ordered = spins[:, idx] if idx.size else spins[:, :0]
-
+    # One vectorised reorder into session node order, then one vectorised
+    # bit-pack. The wire packs node i into bit i % 8 of byte i / 8, lowest bit
+    # first, with bit 1 for +1 (test_spin_encoding pins that equivalence
+    # against wire.encode_spins_packed).
+    ordered = spins_in_node_order(nodes, result)
     packed = np.packbits(ordered > 0, axis=1, bitorder="little")
     solutions = [
         miner_pb2.Solution(

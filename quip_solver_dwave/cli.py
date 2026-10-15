@@ -44,6 +44,7 @@ from quip_solver_dwave.ocean import (
 )
 from quip_solver_dwave.report import render_profile
 from quip_solver_dwave.session_loop import capabilities_message, run_session_sync
+from quip_solver_dwave.solve import run_solve
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,6 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--capabilities",
         action="store_true",
         help="print capability JSON and exit",
+    )
+    p.add_argument(
+        "--solve",
+        action="store_true",
+        help="read one problem as JSON on stdin, write every read as JSON on "
+        "stdout, and exit; never starts a session",
     )
     p.add_argument(
         "--check",
@@ -88,7 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--solver",
         default=None,
-        help="solver to capture from (default: whatever DWAVE_API_SOLVER or "
+        help="solver to capture from or solve on (default: whatever DWAVE_API_SOLVER or "
         "the SDK config selects)",
     )
     p.add_argument(
@@ -293,6 +300,9 @@ def main(argv: list[str] | None = None) -> int:
     # the pre-Ocean name, and both --check and the session path resolve it
     # through the SDK.
     adopt_legacy_token_env()
+
+    if args.solve:
+        return run_solve(solver_name=args.solver, mock=args.mock)
 
     if args.dump_topology:
         return run_dump_topology(args)
