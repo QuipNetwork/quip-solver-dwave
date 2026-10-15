@@ -27,6 +27,14 @@ import numpy as np
 EncodedQP = Dict[str, Union[str, float]]
 
 
+class OffChipError(ValueError):
+    """A job names a qubit or coupler the solver's working graph lacks.
+
+    Permanent for this chip: the same graph fails here every time, so the
+    caller refuses it as a topology mismatch rather than a transient fault.
+    """
+
+
 def build_submission_body(
     solver, data: "EncodedQP", params: Dict[str, object], label: object = None
 ) -> bytes:
@@ -116,7 +124,8 @@ class QpEncoder:
         """Resolve a job graph against the solver's ordering, once.
 
         Raises:
-            ValueError: an edge names a coupler the solver does not have.
+            OffChipError: a node or an edge names a qubit or coupler the
+                solver does not have.
                 Submitting it would make SAPI reject the whole problem, so
                 naming the coupler here beats a ProblemStructureError later.
         """
@@ -138,7 +147,7 @@ class QpEncoder:
             unknown[in_range] = self._slot_of_qubit[mentioned[in_range]] < 0
             if np.any(unknown):
                 bad = int(mentioned[np.nonzero(unknown)[0][0]])
-                raise ValueError(
+                raise OffChipError(
                     f"qubit {bad} is not on the solver; submitting it would "
                     "make SAPI reject the whole problem"
                 )
@@ -172,7 +181,7 @@ class QpEncoder:
             )
             if np.any(missing):
                 bad = edges[np.nonzero(missing)[0][0]]
-                raise ValueError(
+                raise OffChipError(
                     f"coupler ({int(bad[0])}, {int(bad[1])}) is not on the "
                     "solver; submitting it would make SAPI reject the whole "
                     "problem"

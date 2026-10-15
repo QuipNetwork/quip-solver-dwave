@@ -13,6 +13,7 @@ from quip_solver_core.session import DEFAULT_NUM_SWEEPS
 from quip_solver_dwave import MAX_EDGES, MAX_NODES
 from quip_solver_dwave.config import SamplingDefaults
 from quip_solver_dwave.ocean import SampleResult, SupportsSample, is_solver_offline
+from quip_solver_dwave.qp import OffChipError
 from quip_solver_dwave.schedule import ScheduleError
 from quip_solver_dwave.warm import MalformedWarmStart, WarmStart, warm_start_from_ising
 
@@ -439,6 +440,14 @@ def handle_job(
         # changes nothing, so it is not the transient OVERLOADED below.
         logger.warning("job %s: %s; rejecting MALFORMED", job_id.hex(), exc)
         return _reject(job_id, miner_pb2.MALFORMED)
+    except OffChipError as exc:
+        # A graph that does not fit this chip never will, so the coordinator
+        # must route it elsewhere rather than resend it here. Expected input,
+        # so no traceback.
+        logger.warning(
+            "job %s: %s; rejecting TOPOLOGY_MISMATCH", job_id.hex(), exc
+        )
+        return _reject(job_id, miner_pb2.TOPOLOGY_MISMATCH)
     except Exception as exc:
         if is_solver_offline(exc):
             raise SolverUnavailable(job_id) from exc

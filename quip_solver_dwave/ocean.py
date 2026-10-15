@@ -14,6 +14,7 @@ sampler so unit/conformance tests never hit a real QPU.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import threading
@@ -304,6 +305,24 @@ def server_timestamps(raw: Any) -> tuple[Optional[float], Optional[float]]:
     )
 
 
+def _graph_key(nodes: np.ndarray, edges: np.ndarray) -> bytes:
+    """A digest of the job graph, the plan cache's key.
+
+    Counts alone are not an identity: a mempool job with the session's node
+    and edge counts but other edges would reuse the session's plan and anneal
+    the wrong graph. Hashing the arrays costs well under the ~10 ms a plan
+    does. The shapes go in first, so no split of the same bytes between
+    nodes and edges collides.
+    """
+    nodes = np.ascontiguousarray(nodes, dtype=np.int64)
+    edges = np.ascontiguousarray(edges, dtype=np.int64)
+    digest = hashlib.blake2b(digest_size=16)
+    digest.update(np.array([nodes.size, edges.size], dtype=np.int64).tobytes())
+    digest.update(nodes.tobytes())
+    digest.update(edges.tobytes())
+    return digest.digest()
+
+
 class OceanSampler:
     """Thin wrapper around a D-Wave (or mock) sampler.
 
@@ -521,7 +540,7 @@ class OceanSampler:
         Cached on the graph's identity because a session sends the same graph
         every job: planning it costs ~10 ms, encoding against it ~0.6 ms.
         """
-        key = (int(nodes.shape[0]), int(edges.shape[0]))
+        key = _graph_key(nodes, edges)
         with self._inflight_lock:
             cached = self._plan_cache
         encoder = self._encoder
