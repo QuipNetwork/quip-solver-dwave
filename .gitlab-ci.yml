@@ -1,7 +1,7 @@
 stages: [test, build, release]
 
 variables:
-  PKG: quip-miner-dwave
+  PKG: quip-solver-dwave
   # Pinned so a macOS build is reproducible and an upstream installer
   # change cannot land mid-release.
   UV_VERSION: "0.12.10"
@@ -18,7 +18,7 @@ test:
   stage: test
   script:
     - pip install -e ".[dev]"
-    - pytest quip_miner_dwave/tests -v
+    - pytest quip_solver_dwave/tests -v
 
 # End-to-end contract gate: drives the mock-mode miner through
 # quip-solver-drive, the scripted coordinator from the published
@@ -38,7 +38,7 @@ conformance:
     - /opt/venv/bin/pip install -q -e ".[dev]"
   script:
     - cargo install --locked quip-solver-conformance --version 0.0.2-rc1
-    - QUIP_SOLVER_DRIVE="$CARGO_HOME/bin/quip-solver-drive" /opt/venv/bin/pytest quip_miner_dwave/tests/test_conformance.py -v
+    - QUIP_SOLVER_DRIVE="$CARGO_HOME/bin/quip-solver-drive" /opt/venv/bin/pytest quip_solver_dwave/tests/test_conformance.py -v
 
 build-wheel:
   stage: build
@@ -78,7 +78,7 @@ build-macos-arm64:
     # `brew install` writes into the Homebrew prefix even for a formula that is
     # already present, so it fails outright on any host whose prefix belongs to
     # another user. That failure took out three tags — v0.3.2-rc5,
-    # quip-miner v0.3.1-rc6 and v0.3.2-rc8 — each time on a newly added host,
+    # quip-solver v0.3.1-rc6 and v0.3.2-rc8 — each time on a newly added host,
     # and each time the host had to be fixed by hand before a release could go
     # out.
     #
@@ -108,7 +108,7 @@ build-macos-arm64:
     # Library-level check before freezing. A break in Ocean or
     # quip_solver_core surfaces here with a readable traceback instead of as a
     # ModuleNotFoundError from inside the bundle.
-    - pytest quip_miner_dwave/tests -q
+    - pytest quip_solver_dwave/tests -q
     - pyinstaller --clean --noconfirm --distpath dist --workpath .pyi-build pyinstaller/quip-dwave-qa.spec
     - mv dist/quip-dwave-qa dist/quip-dwave-qa-darwin-arm64
     - ls -l dist/
@@ -163,6 +163,6 @@ release:
       whl=$(basename dist/*.whl)
       bin=quip-dwave-qa-darwin-arm64
       base="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${PKG}/${CI_COMMIT_TAG}"
-      release-cli create --name "quip-miner-dwave ${CI_COMMIT_TAG}" --tag-name "${CI_COMMIT_TAG}" \
+      release-cli create --name "quip-solver-dwave ${CI_COMMIT_TAG}" --tag-name "${CI_COMMIT_TAG}" \
         --assets-link "{\"name\":\"${whl}\",\"url\":\"${base}/${whl}\"}" \
         --assets-link "{\"name\":\"${bin}\",\"url\":\"${base}/${bin}\"}"

@@ -35,8 +35,8 @@ from typing import Dict, List, Tuple
 import numpy as np
 import quip_msa
 
-from quip_miner_dwave import replay
-from quip_miner_dwave.msa import load_kernel, pack_lanes
+from quip_solver_dwave import replay
+from quip_solver_dwave.msa import load_kernel, pack_lanes
 
 HEADER = [
     "nonce", "arm", "start_fraction", "sweeps", "best_milli",

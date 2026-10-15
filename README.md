@@ -1,10 +1,10 @@
-# quip-miner-dwave
+# quip-solver-dwave
 
 D-Wave (Ocean) QPU Ising miner for the [quip.network](https://gitlab.com/quip.network)
 v0.3 mining protocol. Ships as a pip-installable Python package with a
 `quip-dwave-qa` console entry point.
 
-Unlike the classical miners (`quip-miner-cpu`/`-cuda`/`-metal`), there is no
+Unlike the classical miners (`quip-solver-cpu`/`-cuda`/`-metal`), there is no
 SA/Gibbs binary split: this backend samples on a D-Wave QPU via Ocean
 (`dwave.system.DWaveSampler`), and every job goes to the QPU.
 
@@ -25,7 +25,7 @@ file.
 
 ```sh
 TAG=v0.3.0-rc3   # or a later release
-BASE=https://gitlab.com/api/v4/projects/84792347/packages/generic/quip-miner-dwave
+BASE=https://gitlab.com/api/v4/projects/84792347/packages/generic/quip-solver-dwave
 curl -fLO "$BASE/$TAG/quip-dwave-qa-darwin-arm64"
 chmod +x quip-dwave-qa-darwin-arm64
 mv quip-dwave-qa-darwin-arm64 /usr/local/bin/quip-dwave-qa
@@ -38,7 +38,7 @@ same way.
 ### From source
 
 ```sh
-pip install "quip-miner-dwave @ git+https://gitlab.com/quip.network/quip-miner-dwave.git"
+pip install "quip-solver-dwave @ git+https://gitlab.com/quip.network/quip-solver-dwave.git"
 ```
 
 The `quip_solver_core` SDK dependency installs from a published PyPI wheel on
@@ -71,7 +71,7 @@ it.
 
 ```sh
 quip-dwave-qa --quip-coordinator unix:///run/quip/coord.sock
-# or: python -m quip_miner_dwave --quip-coordinator ...
+# or: python -m quip_solver_dwave --quip-coordinator ...
 ```
 
 **Driver / fixed-input (run in isolation, no chain).** Use the coordinator's
@@ -156,7 +156,7 @@ costs and performs the same as the old form.
 
 Six scripts measure the hybrid pipeline against the recorded QPU attempts of a
 node. No production code path of the miner imports them. They need the
-`quip_msa` wheel from quip-miner-cpu. Keep the data outside the repository, in
+`quip_msa` wheel from quip-solver-cpu. Keep the data outside the repository, in
 one directory such as `~/quip-data/qui-1387/`. That directory holds the
 topology spec, `attempts.csv`, and every output.
 
@@ -170,7 +170,7 @@ Run them in this order:
    count and pass share, then writes `low-energy.nonces` and
    `false-positive.nonces`.
 4. `scripts/heavy_replay.py` runs MSA at high sweeps on both lists through
-   `quip-coordinator drive` and quip-miner-cuda, then compares the two sets.
+   `quip-coordinator drive` and quip-solver-cuda, then compares the two sets.
 5. `scripts/capture_qpu_reads.py` submits sampled models to the QPU and keeps
    every read.
 6. `scripts/seeded_sweep.py` starts the MSA kernel from those reads at a range
@@ -263,7 +263,7 @@ Three reasons predate the strategy and still appear where it plays no part: `bud
 
 ```sh
 pip install -e ".[dev]"
-pytest quip_miner_dwave/tests -v
+pytest quip_solver_dwave/tests -v
 ```
 
 ## License

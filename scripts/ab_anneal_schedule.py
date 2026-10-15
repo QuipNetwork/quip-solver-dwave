@@ -37,8 +37,8 @@ from typing import Any, Deque, Dict, List, Tuple
 import numpy as np
 from dwave.system import DWaveSampler
 
-from quip_miner_dwave.schedule import forward_schedule
-from quip_miner_dwave.stats import ks_two_sample
+from quip_solver_dwave.schedule import forward_schedule
+from quip_solver_dwave.stats import ks_two_sample
 
 ACCESS_TOLERANCE = 0.01
 KS_ALPHA = 0.05

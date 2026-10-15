@@ -22,10 +22,10 @@ import os
 from PyInstaller.utils.hooks import collect_all
 
 # The repository root, one directory above this spec. CI installs the package
-# normally, so site-packages carries quip_miner_dwave; a development checkout
+# normally, so site-packages carries quip_solver_dwave; a development checkout
 # installs it with `pip install -e .`, which hides it behind a .pth import hook
 # that PyInstaller's static analysis does not follow. Without this the binary
-# built, ran, and died with "No module named 'quip_miner_dwave'".
+# built, ran, and died with "No module named 'quip_solver_dwave'".
 _ROOT = os.path.dirname(SPECPATH)  # noqa: F821 - PyInstaller global
 
 # collect_all() pulls submodules, data files and shared libraries for packages

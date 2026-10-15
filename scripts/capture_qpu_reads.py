@@ -23,8 +23,8 @@ from typing import Any, List
 
 import numpy as np
 
-from quip_miner_dwave import replay
-from quip_miner_dwave.ocean import OceanSampler
+from quip_solver_dwave import replay
+from quip_solver_dwave.ocean import OceanSampler
 
 EST_ACCESS_US = 46_100
 

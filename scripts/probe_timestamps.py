@@ -12,7 +12,7 @@ import time
 
 import numpy as np
 
-from quip_miner_dwave.ocean import OceanSampler
+from quip_solver_dwave.ocean import OceanSampler
 
 
 def main() -> int:

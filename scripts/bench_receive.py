@@ -24,7 +24,7 @@ import time
 import numpy as np
 from dwave.system import DWaveSampler
 
-from quip_miner_dwave.answer import answer_view
+from quip_solver_dwave.answer import answer_view
 
 N_READS = 48
 N_COUPLERS = 41514

@@ -3,8 +3,8 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "quip-miner-dwave"
-version = "0.3.4"
+name = "quip-solver-dwave"
+version = "0.3.5"
 description = "D-Wave (Ocean) QPU Ising miner for the quip.network v0.3 protocol"
 readme = "README.md"
 # Floor set by quip_solver_core, which requires >=3.11. Declaring 3.10 here
@@ -32,13 +32,13 @@ dev = ["pytest", "pytest-asyncio", "hypothesis"]
 # Console entry point matches the code's prog name and the coordinator's
 # default binary for the dwave backend.
 [project.scripts]
-quip-dwave-qa = "quip_miner_dwave.cli:main"
+quip-dwave-qa = "quip_solver_dwave.cli:main"
 
 [project.urls]
-Repository = "https://gitlab.com/quip.network/quip-miner-dwave"
+Repository = "https://gitlab.com/quip.network/quip-solver-dwave"
 
 [tool.setuptools.packages.find]
-include = ["quip_miner_dwave*"]
+include = ["quip_solver_dwave*"]
 
 # Pyright resolves imports from the project venv; without this it cannot see
 # quip_solver_core or the Ocean SDK and reports every import as missing.

@@ -27,9 +27,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Set, Tuple
 
-from quip_miner_dwave import replay
-from quip_miner_dwave.lite_filter import low_energy_set
-from quip_miner_dwave.msa import load_kernel
+from quip_solver_dwave import replay
+from quip_solver_dwave.lite_filter import low_energy_set
+from quip_solver_dwave.msa import load_kernel
 
 HEADER = ["nonce", "sweeps", "lite_best_milli", "lite_wall_ms"]
 RATE_HEADER = ["sweeps", "threads", "models", "seconds", "models_per_s"]

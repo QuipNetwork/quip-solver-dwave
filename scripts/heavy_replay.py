@@ -2,7 +2,7 @@
 """Run MSA at high sweeps on the step 5 nonce lists: step 6 of QUI-1387.
 
 ``run`` replays each nonce list through ``quip-coordinator drive --source
-list`` with quip-miner-cuda as the miner, in chunks of at most 10,000 because
+list`` with quip-solver-cuda as the miner, in chunks of at most 10,000 because
 the driver holds a whole list in memory, and merges the reports into one CSV.
 
 ``compare`` reads that CSV. The low-energy set is what the QPU filter keeps.
@@ -25,7 +25,7 @@ import sys
 import tempfile
 from typing import Dict, List, Tuple
 
-from quip_miner_dwave.stats import ks_two_sample
+from quip_solver_dwave.stats import ks_two_sample
 
 HEADER = ["nonce", "set", "heavy_best_milli", "reads", "sweeps", "wall_ms"]
 CHUNK = 10_000

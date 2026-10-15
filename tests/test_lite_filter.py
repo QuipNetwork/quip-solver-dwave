@@ -1,4 +1,4 @@
-from quip_miner_dwave.lite_filter import (
+from quip_solver_dwave.lite_filter import (
     FilterRow,
     ceiling_for_share,
     choose_sweeps,

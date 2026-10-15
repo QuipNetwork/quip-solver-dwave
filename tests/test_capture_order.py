@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from quip_miner_dwave import replay
+from quip_solver_dwave import replay
 
 
 def spec_of(nodes):

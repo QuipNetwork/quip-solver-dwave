@@ -1,6 +1,6 @@
 import numpy as np
 
-from quip_miner_dwave.stats import ks_two_sample, spearman
+from quip_solver_dwave.stats import ks_two_sample, spearman
 
 
 def test_ks_does_not_separate_two_samples_of_one_distribution():

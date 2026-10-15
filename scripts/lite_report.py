@@ -19,8 +19,8 @@ import sys
 from collections import defaultdict
 from typing import Dict
 
-from quip_miner_dwave import replay
-from quip_miner_dwave.lite_filter import (
+from quip_solver_dwave import replay
+from quip_solver_dwave.lite_filter import (
     ceiling_for_share,
     choose_sweeps,
     filter_row,

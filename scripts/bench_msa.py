@@ -30,7 +30,7 @@ from typing import List, Tuple
 import numpy as np
 from dwave.graphs import zephyr_graph
 
-from quip_miner_dwave.msa import LANES, load_kernel
+from quip_solver_dwave.msa import LANES, load_kernel
 
 LITE_SWEEPS = (128, 256, 512, 1024, 2048)
 TARGET_MODELS_PER_S = 100.0

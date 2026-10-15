@@ -1,4 +1,4 @@
-"""Stub for the optional ``quip_msa`` binding (quip-miner-cpu/py).
+"""Stub for the optional ``quip_msa`` binding (quip-solver-cpu/py).
 
 Hand-written to match ``py/src/lib.rs``. The binding is not a dependency of
 this package, so without the stub Pyright cannot resolve the import at all.
