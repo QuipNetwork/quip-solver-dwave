@@ -100,7 +100,7 @@ def load_chains(path: PathLike, topology_hash: str) -> List[List[int]]:
 
 def load_cell(name: str, spec: TopologySpec, embeddings_dir: Optional[PathLike]) -> regimes.Cell:
     """A cell that draws from the protocol stream. The clique cell has no ``Cell``."""
-    if name in ("native-pm1", "native-125"):
+    if name in regimes.NATIVE_CELLS:
         return regimes.native_cell(name, spec)
     if embeddings_dir is None:
         raise ValueError(f"{name} needs --embeddings-dir")
@@ -152,7 +152,7 @@ def cell_identity(
         "topology_hash": spec_topology_hash(spec),
         "model_order_hash": hashlib.sha256(ordered.encode()).hexdigest(),
     }
-    if name not in ("native-pm1", "native-125"):
+    if name not in regimes.NATIVE_CELLS:
         if embeddings_dir is None:
             raise ValueError(f"{name} needs --embeddings-dir")
         filename = CLIQUE_FILE if name == "clique-portfolio" else LATTICE_FILES[name]
