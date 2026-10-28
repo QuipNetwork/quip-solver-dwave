@@ -314,6 +314,15 @@ data.
 - Changes to billing, cancellation, or the encoder should be mutation-tested:
   revert the fix, confirm a specific test goes red, restore.
 - No LLM attribution trailers in commits.
+- Never write "milli" in prose, names, formulas, charts, or Notion. The
+  model files store couplers, fields, and energies as integer thousandths
+  (`j_milli`, `h_milli`, `best_milli`), but every written value uses the unit
+  of the full-strength coupler: 1,000 thousandths is +1 and −1,000 is −1
+  (binary couplers), while 460 is 0.460 and 62 is 0.062 (precision couplers,
+  three decimals). Energies are whole units, so one unit is the energy of one
+  coupler at full strength. Write `0.062 glass` and never `62 milli glass`.
+  Identifiers in code keep their `_milli` suffix. The formatter is
+  `coupler()` in `new-pow/notion/build_pages.py`. Operator ruling 2026-10-27.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
