@@ -39,6 +39,7 @@ class Algorithm(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     ALGORITHM_SBQA: _ClassVar[Algorithm]
     ALGORITHM_TEDSB: _ClassVar[Algorithm]
     ALGORITHM_EXTERNAL: _ClassVar[Algorithm]
+    ALGORITHM_OTSUKA: _ClassVar[Algorithm]
 
 class CoefficientEncoding(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -54,6 +55,7 @@ class GeneratorAlgorithm(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     GENERATOR_ALGORITHM_UNSPECIFIED: _ClassVar[GeneratorAlgorithm]
     GENERATOR_ALGORITHM_BLAKE3_CHACHA8_V1: _ClassVar[GeneratorAlgorithm]
+    GENERATOR_ALGORITHM_FAMILY_CHACHA8_V1: _ClassVar[GeneratorAlgorithm]
 
 class JobKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -74,6 +76,7 @@ class RejectReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     TOPOLOGY_MISMATCH: _ClassVar[RejectReason]
     TOPOLOGY_MISSING: _ClassVar[RejectReason]
     TARGET_MISSING: _ClassVar[RejectReason]
+    FAMILY_UNSUPPORTED: _ClassVar[RejectReason]
 BACKEND_UNSPECIFIED: Backend
 BACKEND_CPU: Backend
 BACKEND_CUDA: Backend
@@ -101,6 +104,7 @@ ALGORITHM_HDSB: Algorithm
 ALGORITHM_SBQA: Algorithm
 ALGORITHM_TEDSB: Algorithm
 ALGORITHM_EXTERNAL: Algorithm
+ALGORITHM_OTSUKA: Algorithm
 COEFFICIENT_ENCODING_UNSPECIFIED: CoefficientEncoding
 COEFFICIENT_ENCODING_I32: CoefficientEncoding
 COEFFICIENT_ENCODING_I16: CoefficientEncoding
@@ -110,6 +114,7 @@ COEFFICIENT_ENCODING_F32: CoefficientEncoding
 COEFFICIENT_ENCODING_F64: CoefficientEncoding
 GENERATOR_ALGORITHM_UNSPECIFIED: GeneratorAlgorithm
 GENERATOR_ALGORITHM_BLAKE3_CHACHA8_V1: GeneratorAlgorithm
+GENERATOR_ALGORITHM_FAMILY_CHACHA8_V1: GeneratorAlgorithm
 JOB_KIND_UNSPECIFIED: JobKind
 ISING_SAMPLE: JobKind
 GATE_CIRCUIT: JobKind
@@ -124,6 +129,7 @@ MALFORMED: RejectReason
 TOPOLOGY_MISMATCH: RejectReason
 TOPOLOGY_MISSING: RejectReason
 TARGET_MISSING: RejectReason
+FAMILY_UNSUPPORTED: RejectReason
 
 class MinerMsg(_message.Message):
     __slots__ = ("hello", "ready", "job_request", "result", "reject", "status", "fatal", "capabilities", "lease_done")
@@ -244,13 +250,14 @@ class EdgeList(_message.Message):
     def __init__(self, u: _Optional[_Iterable[int]] = ..., v: _Optional[_Iterable[int]] = ...) -> None: ...
 
 class IsingProblem(_message.Message):
-    __slots__ = ("topology_hash", "edges", "encoding", "scale", "h", "j", "num_reads", "num_sweeps", "anneal_time_us", "initial_spins", "start_beta_milli", "reversal_s_milli", "reversal_pause_us")
+    __slots__ = ("topology_hash", "edges", "encoding", "scale", "h", "j", "family", "num_reads", "num_sweeps", "anneal_time_us", "initial_spins", "start_beta_milli", "reversal_s_milli", "reversal_pause_us")
     TOPOLOGY_HASH_FIELD_NUMBER: _ClassVar[int]
     EDGES_FIELD_NUMBER: _ClassVar[int]
     ENCODING_FIELD_NUMBER: _ClassVar[int]
     SCALE_FIELD_NUMBER: _ClassVar[int]
     H_FIELD_NUMBER: _ClassVar[int]
     J_FIELD_NUMBER: _ClassVar[int]
+    FAMILY_FIELD_NUMBER: _ClassVar[int]
     NUM_READS_FIELD_NUMBER: _ClassVar[int]
     NUM_SWEEPS_FIELD_NUMBER: _ClassVar[int]
     ANNEAL_TIME_US_FIELD_NUMBER: _ClassVar[int]
@@ -264,6 +271,7 @@ class IsingProblem(_message.Message):
     scale: int
     h: bytes
     j: bytes
+    family: FamilyBinding
     num_reads: int
     num_sweeps: int
     anneal_time_us: int
@@ -271,7 +279,7 @@ class IsingProblem(_message.Message):
     start_beta_milli: int
     reversal_s_milli: int
     reversal_pause_us: int
-    def __init__(self, topology_hash: _Optional[bytes] = ..., edges: _Optional[_Union[EdgeList, _Mapping]] = ..., encoding: _Optional[_Union[CoefficientEncoding, str]] = ..., scale: _Optional[int] = ..., h: _Optional[bytes] = ..., j: _Optional[bytes] = ..., num_reads: _Optional[int] = ..., num_sweeps: _Optional[int] = ..., anneal_time_us: _Optional[int] = ..., initial_spins: _Optional[_Iterable[bytes]] = ..., start_beta_milli: _Optional[int] = ..., reversal_s_milli: _Optional[int] = ..., reversal_pause_us: _Optional[int] = ...) -> None: ...
+    def __init__(self, topology_hash: _Optional[bytes] = ..., edges: _Optional[_Union[EdgeList, _Mapping]] = ..., encoding: _Optional[_Union[CoefficientEncoding, str]] = ..., scale: _Optional[int] = ..., h: _Optional[bytes] = ..., j: _Optional[bytes] = ..., family: _Optional[_Union[FamilyBinding, _Mapping]] = ..., num_reads: _Optional[int] = ..., num_sweeps: _Optional[int] = ..., anneal_time_us: _Optional[int] = ..., initial_spins: _Optional[_Iterable[bytes]] = ..., start_beta_milli: _Optional[int] = ..., reversal_s_milli: _Optional[int] = ..., reversal_pause_us: _Optional[int] = ...) -> None: ...
 
 class Provenance(_message.Message):
     __slots__ = ("is_pow", "order_id")
@@ -408,7 +416,7 @@ class GetCapabilities(_message.Message):
     def __init__(self) -> None: ...
 
 class Capabilities(_message.Message):
-    __slots__ = ("supported_kinds", "max_nodes", "max_edges", "features", "protocol_version", "stream_width", "native_topology_hash", "encodings", "generators", "backend", "algorithm", "max_degree", "max_local_field_milli", "exact_resolution_milli")
+    __slots__ = ("supported_kinds", "max_nodes", "max_edges", "features", "protocol_version", "stream_width", "native_topology_hash", "encodings", "generators", "backend", "algorithm", "max_degree", "max_local_field_milli", "exact_resolution_milli", "solver_id", "generated_families", "accepted_families")
     SUPPORTED_KINDS_FIELD_NUMBER: _ClassVar[int]
     MAX_NODES_FIELD_NUMBER: _ClassVar[int]
     MAX_EDGES_FIELD_NUMBER: _ClassVar[int]
@@ -423,6 +431,9 @@ class Capabilities(_message.Message):
     MAX_DEGREE_FIELD_NUMBER: _ClassVar[int]
     MAX_LOCAL_FIELD_MILLI_FIELD_NUMBER: _ClassVar[int]
     EXACT_RESOLUTION_MILLI_FIELD_NUMBER: _ClassVar[int]
+    SOLVER_ID_FIELD_NUMBER: _ClassVar[int]
+    GENERATED_FAMILIES_FIELD_NUMBER: _ClassVar[int]
+    ACCEPTED_FAMILIES_FIELD_NUMBER: _ClassVar[int]
     supported_kinds: _containers.RepeatedScalarFieldContainer[JobKind]
     max_nodes: int
     max_edges: int
@@ -437,10 +448,13 @@ class Capabilities(_message.Message):
     max_degree: int
     max_local_field_milli: int
     exact_resolution_milli: int
-    def __init__(self, supported_kinds: _Optional[_Iterable[_Union[JobKind, str]]] = ..., max_nodes: _Optional[int] = ..., max_edges: _Optional[int] = ..., features: _Optional[_Iterable[str]] = ..., protocol_version: _Optional[int] = ..., stream_width: _Optional[int] = ..., native_topology_hash: _Optional[bytes] = ..., encodings: _Optional[_Iterable[_Union[CoefficientEncoding, str]]] = ..., generators: _Optional[_Iterable[_Union[GeneratorAlgorithm, str]]] = ..., backend: _Optional[_Union[Backend, str]] = ..., algorithm: _Optional[_Union[Algorithm, str]] = ..., max_degree: _Optional[int] = ..., max_local_field_milli: _Optional[int] = ..., exact_resolution_milli: _Optional[int] = ...) -> None: ...
+    solver_id: str
+    generated_families: _containers.RepeatedCompositeFieldContainer[FamilySupport]
+    accepted_families: _containers.RepeatedCompositeFieldContainer[FamilySupport]
+    def __init__(self, supported_kinds: _Optional[_Iterable[_Union[JobKind, str]]] = ..., max_nodes: _Optional[int] = ..., max_edges: _Optional[int] = ..., features: _Optional[_Iterable[str]] = ..., protocol_version: _Optional[int] = ..., stream_width: _Optional[int] = ..., native_topology_hash: _Optional[bytes] = ..., encodings: _Optional[_Iterable[_Union[CoefficientEncoding, str]]] = ..., generators: _Optional[_Iterable[_Union[GeneratorAlgorithm, str]]] = ..., backend: _Optional[_Union[Backend, str]] = ..., algorithm: _Optional[_Union[Algorithm, str]] = ..., max_degree: _Optional[int] = ..., max_local_field_milli: _Optional[int] = ..., exact_resolution_milli: _Optional[int] = ..., solver_id: _Optional[str] = ..., generated_families: _Optional[_Iterable[_Union[FamilySupport, _Mapping]]] = ..., accepted_families: _Optional[_Iterable[_Union[FamilySupport, _Mapping]]] = ...) -> None: ...
 
 class IsingProblemGenerator(_message.Message):
-    __slots__ = ("algorithm", "topology_hash", "last_proof_block_hash", "miner_account", "base_salt", "salt_start", "salt_count")
+    __slots__ = ("algorithm", "topology_hash", "last_proof_block_hash", "miner_account", "base_salt", "salt_start", "salt_count", "family", "topology_order_digest")
     ALGORITHM_FIELD_NUMBER: _ClassVar[int]
     TOPOLOGY_HASH_FIELD_NUMBER: _ClassVar[int]
     LAST_PROOF_BLOCK_HASH_FIELD_NUMBER: _ClassVar[int]
@@ -448,6 +462,8 @@ class IsingProblemGenerator(_message.Message):
     BASE_SALT_FIELD_NUMBER: _ClassVar[int]
     SALT_START_FIELD_NUMBER: _ClassVar[int]
     SALT_COUNT_FIELD_NUMBER: _ClassVar[int]
+    FAMILY_FIELD_NUMBER: _ClassVar[int]
+    TOPOLOGY_ORDER_DIGEST_FIELD_NUMBER: _ClassVar[int]
     algorithm: GeneratorAlgorithm
     topology_hash: bytes
     last_proof_block_hash: bytes
@@ -455,7 +471,9 @@ class IsingProblemGenerator(_message.Message):
     base_salt: bytes
     salt_start: int
     salt_count: int
-    def __init__(self, algorithm: _Optional[_Union[GeneratorAlgorithm, str]] = ..., topology_hash: _Optional[bytes] = ..., last_proof_block_hash: _Optional[bytes] = ..., miner_account: _Optional[bytes] = ..., base_salt: _Optional[bytes] = ..., salt_start: _Optional[int] = ..., salt_count: _Optional[int] = ...) -> None: ...
+    family: FamilyDescriptor
+    topology_order_digest: bytes
+    def __init__(self, algorithm: _Optional[_Union[GeneratorAlgorithm, str]] = ..., topology_hash: _Optional[bytes] = ..., last_proof_block_hash: _Optional[bytes] = ..., miner_account: _Optional[bytes] = ..., base_salt: _Optional[bytes] = ..., salt_start: _Optional[int] = ..., salt_count: _Optional[int] = ..., family: _Optional[_Union[FamilyDescriptor, _Mapping]] = ..., topology_order_digest: _Optional[bytes] = ...) -> None: ...
 
 class LeaseDone(_message.Message):
     __slots__ = ("job_id", "salts_done", "best_energy_milli")
@@ -466,3 +484,43 @@ class LeaseDone(_message.Message):
     salts_done: int
     best_energy_milli: int
     def __init__(self, job_id: _Optional[bytes] = ..., salts_done: _Optional[int] = ..., best_energy_milli: _Optional[int] = ...) -> None: ...
+
+class FamilyDescriptor(_message.Message):
+    __slots__ = ("family_id", "revision", "params", "params_digest")
+    FAMILY_ID_FIELD_NUMBER: _ClassVar[int]
+    REVISION_FIELD_NUMBER: _ClassVar[int]
+    PARAMS_FIELD_NUMBER: _ClassVar[int]
+    PARAMS_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    family_id: str
+    revision: int
+    params: bytes
+    params_digest: bytes
+    def __init__(self, family_id: _Optional[str] = ..., revision: _Optional[int] = ..., params: _Optional[bytes] = ..., params_digest: _Optional[bytes] = ...) -> None: ...
+
+class FamilyBinding(_message.Message):
+    __slots__ = ("family", "nonce", "instance_digest", "metadata", "topology_order_digest", "node_ids", "offset_milli")
+    FAMILY_FIELD_NUMBER: _ClassVar[int]
+    NONCE_FIELD_NUMBER: _ClassVar[int]
+    INSTANCE_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    METADATA_FIELD_NUMBER: _ClassVar[int]
+    TOPOLOGY_ORDER_DIGEST_FIELD_NUMBER: _ClassVar[int]
+    NODE_IDS_FIELD_NUMBER: _ClassVar[int]
+    OFFSET_MILLI_FIELD_NUMBER: _ClassVar[int]
+    family: FamilyDescriptor
+    nonce: bytes
+    instance_digest: bytes
+    metadata: bytes
+    topology_order_digest: bytes
+    node_ids: _containers.RepeatedScalarFieldContainer[int]
+    offset_milli: int
+    def __init__(self, family: _Optional[_Union[FamilyDescriptor, _Mapping]] = ..., nonce: _Optional[bytes] = ..., instance_digest: _Optional[bytes] = ..., metadata: _Optional[bytes] = ..., topology_order_digest: _Optional[bytes] = ..., node_ids: _Optional[_Iterable[int]] = ..., offset_milli: _Optional[int] = ...) -> None: ...
+
+class FamilySupport(_message.Message):
+    __slots__ = ("family_id", "revisions", "params_digests")
+    FAMILY_ID_FIELD_NUMBER: _ClassVar[int]
+    REVISIONS_FIELD_NUMBER: _ClassVar[int]
+    PARAMS_DIGESTS_FIELD_NUMBER: _ClassVar[int]
+    family_id: str
+    revisions: _containers.RepeatedScalarFieldContainer[int]
+    params_digests: _containers.RepeatedScalarFieldContainer[bytes]
+    def __init__(self, family_id: _Optional[str] = ..., revisions: _Optional[_Iterable[int]] = ..., params_digests: _Optional[_Iterable[bytes]] = ...) -> None: ...

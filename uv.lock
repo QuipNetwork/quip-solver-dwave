@@ -6,10 +6,6 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 
-[options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
-exclude-newer-span = "P1W"
-
 [[package]]
 name = "annotated-types"
 version = "0.8.0"
@@ -1525,17 +1521,17 @@ wheels = [
 
 [[package]]
 name = "quip-solver-core"
-version = "0.0.4rc1"
+version = "0.0.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "grpcio" },
     { name = "protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5f/0f/6ad38d5b06aba1c26b41188de7d31e04dd7edd8797bca5c76c8bcfbc39bd/quip_solver_core-0.0.4rc1.tar.gz", hash = "sha256:0732d785256aca847844f8ea4711aa524f701c5c7578d8f4e18bacedbcc04b1a", size = 138413, upload-time = "2026-10-12T03:23:46.707Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/31/89/650e0029d05ab283d65173c18a944b10e16b183a998da33cf3ef583740bb/quip_solver_core-0.0.6.tar.gz", hash = "sha256:a8ba33f92d67216be75400eea2965656943c18976eddb96b4ab07a6e2e0c6770", size = 618884, upload-time = "2026-11-09T21:01:11.618Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ee/aa/eb682ae826a2749d4af0d0f9ec7bceb29049f89ca0b21540e3c7775ab4d2/quip_solver_core-0.0.4rc1-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:e91031b1dee71b1c9387006f347fe1011470610aec0121391dab5c716b36928f", size = 253106, upload-time = "2026-10-12T03:23:43.382Z" },
-    { url = "https://files.pythonhosted.org/packages/8a/29/c4f7333635b3c4e372f34f831760d26354204acb08f262aa8d9b9ce86ece/quip_solver_core-0.0.4rc1-cp311-abi3-manylinux_2_34_aarch64.whl", hash = "sha256:af89237f1628f5a93cc6a55b607ad5751f055e57cac546b5274f523c6a0d9303", size = 276805, upload-time = "2026-10-12T03:23:44.689Z" },
-    { url = "https://files.pythonhosted.org/packages/07/44/390e383783d5e95f60e764363c7617a42bbd07c0373a1d70d9ee87305e43/quip_solver_core-0.0.4rc1-cp311-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:71c8c9b956ecca2edd571554bf46e963cbf028ba4758345bc1c74fca723b2be5", size = 279610, upload-time = "2026-10-12T03:23:45.631Z" },
+    { url = "https://files.pythonhosted.org/packages/58/47/e323d6b12976df97fc5e4e9f87cf964acf8773bb5b290393138c66d0ea18/quip_solver_core-0.0.6-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:5a635effe63bb9521f047ace12e38a05c3879ec5ef05947adbc72f3ce7ae7fcb", size = 254104, upload-time = "2026-11-09T21:01:08.091Z" },
+    { url = "https://files.pythonhosted.org/packages/84/cc/227b257a9dd90964a9377fc033e22111e0a245f3ceabeedec685509a67be/quip_solver_core-0.0.6-cp311-abi3-manylinux_2_34_aarch64.whl", hash = "sha256:c3b02f2ad15b42bd053cf6d206a5130301cc5c92d129e6bf9de9af07d7db541f", size = 278006, upload-time = "2026-11-09T21:01:09.295Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/7d/5bd08983c834879a4ca2665826a9d0e57c1e046061045f2611bc1ad9201a/quip_solver_core-0.0.6-cp311-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:b5b79436307d06095e551694c06c488a37fb1212f84d8b01cfaee958aac31782", size = 285508, upload-time = "2026-11-09T21:01:10.414Z" },
 ]
 
 [[package]]
@@ -1560,7 +1556,7 @@ requires-dist = [
     { name = "hypothesis", marker = "extra == 'dev'" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
-    { name = "quip-solver-core", specifier = "==0.0.4rc1" },
+    { name = "quip-solver-core", specifier = "==0.0.6" },
 ]
 provides-extras = ["dev"]
 
