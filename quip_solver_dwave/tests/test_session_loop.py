@@ -69,7 +69,10 @@ def test_capabilities_message_matches_advertised_caps():
     assert [(f.family_id, list(f.revisions), list(f.params_digests)) for f in caps.generated_families] == [
         ("quip/twisted-ice-dimer", [1], [])
     ]
-    assert list(caps.accepted_families) == []
+    # Explicit jobs of the same revision, advertised apart from generation.
+    assert [(f.family_id, list(f.revisions), list(f.params_digests)) for f in caps.accepted_families] == [
+        ("quip/twisted-ice-dimer", [1], [])
+    ]
 
 
 # First 8 bytes of a longer job id, matching the observed CPU miner line.

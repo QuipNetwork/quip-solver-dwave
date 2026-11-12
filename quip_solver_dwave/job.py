@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -12,6 +12,7 @@ from quip_solver_core.session import DEFAULT_NUM_SWEEPS
 
 from quip_solver_dwave import MAX_EDGES, MAX_NODES
 from quip_solver_dwave.config import SamplingDefaults
+from quip_solver_dwave.families import BoundInstance, FamilyJobRejected, bind
 from quip_solver_dwave.ocean import SampleResult, SupportsSample, is_solver_offline
 from quip_solver_dwave.schedule import ScheduleError
 from quip_solver_dwave.warm import MalformedWarmStart, WarmStart, warm_start_from_ising
@@ -202,7 +203,7 @@ def _reject(
 def _validate_job(
     job: miner_pb2.Job,
     session_hash: Optional[bytes],
-) -> Tuple[miner_pb2.IsingProblem, List[float], List[float]]:
+) -> Tuple[miner_pb2.IsingProblem, List[int], List[int], Optional[BoundInstance]]:
     """Check job-level invariants and decode the milli arrays.
 
     Args:
@@ -211,11 +212,13 @@ def _validate_job(
             no ``Topology`` has arrived yet.
 
     Returns:
-        The job's ``IsingProblem`` and its decoded ``h`` and ``j`` values.
+        The job's ``IsingProblem``, its decoded ``h`` and ``j`` in milli, and
+        its validated family instance when the job binds an accepted family.
 
     Raises:
         _Rejected: Unsupported kind, undecodable ``h``/``j``, a deadline
-            already passed, or a ``topology_hash`` the session cannot satisfy.
+            already passed, a family binding that fails FAM-65, or a
+            ``topology_hash`` the session cannot satisfy.
     """
     if job.kind not in (
         miner_pb2.ISING_SAMPLE,
@@ -230,18 +233,24 @@ def _validate_job(
     except CoefficientsInvalid as err:
         logger.warning("job %s: %s; rejecting MALFORMED", job.job_id.hex(), err)
         raise _Rejected(miner_pb2.MALFORMED) from None
-    h = [v / 1000.0 for v in h_milli]
-    j_vals = [v / 1000.0 for v in j_milli]
 
     # TOO_LARGE: the job exceeds the capability envelope this backend
     # advertises in Hello, Capabilities, and --capabilities. Sampling past it
     # would hand Ocean (or the exact mock solver) a problem the miner never
     # claimed to serve.
-    if len(h) > MAX_NODES or len(j_vals) > MAX_EDGES:
+    if len(h_milli) > MAX_NODES or len(j_milli) > MAX_EDGES:
         raise _Rejected(miner_pb2.TOO_LARGE)
 
     if job.deadline_ms and job.deadline_ms < now_unix_ms():
         raise _Rejected(miner_pb2.EXPIRED)
+
+    # Before the topology checks: a bound job in the topology_hash form is
+    # code 15, whatever the session has cached (FAM-64).
+    try:
+        bound = bind(ising, h_milli, j_milli)
+    except FamilyJobRejected as exc:
+        logger.warning("job %s: %s; rejecting", job.job_id.hex(), exc)
+        raise _Rejected(exc.reason) from None
 
     if ising.WhichOneof("graph") == "topology_hash":
         if session_hash is None:
@@ -249,7 +258,62 @@ def _validate_job(
         if bytes(ising.topology_hash) != bytes(session_hash):
             raise _Rejected(miner_pb2.TOPOLOGY_MISMATCH)
 
-    return ising, h, j_vals
+    return ising, h_milli, j_milli, bound
+
+
+def _fit_bound(bound: BoundInstance, sampler: Any, *, job_id: bytes) -> None:
+    """Refuse a family instance the solver's graph cannot hold.
+
+    The instance names native qubits, so it is sampled on them as given:
+    nothing is embedded, truncated or dropped. A qubit or coupler that is
+    neither on the live graph nor clamped as a defect rejects the job.
+    """
+    unplaceable = getattr(sampler, "unplaceable", None)
+    if unplaceable is None:
+        return
+    missing_nodes, missing_edges = unplaceable(bound.node_ids, bound.edges)
+    if missing_nodes or missing_edges:
+        logger.warning(
+            "job %s: the solver graph lacks %d qubits and %d couplers of the "
+            "family instance; rejecting TOPOLOGY_MISMATCH",
+            job_id.hex(),
+            missing_nodes,
+            missing_edges,
+        )
+        raise _Rejected(miner_pb2.TOPOLOGY_MISMATCH)
+
+
+def _build_family_result(
+    job_id: bytes,
+    bound: BoundInstance,
+    result: SampleResult,
+    num_sweeps: int,
+    postprocess: Optional[Callable[[BoundInstance, np.ndarray], Optional[np.ndarray]]],
+) -> List[miner_pb2.MinerMsg]:
+    """The Result of a bound job: exact plain-model energies, in instance order.
+
+    A configured postprocess adds its final state ahead of every raw read.
+    """
+    spins = ordered_spins(bound.node_ids, result)
+    if postprocess is not None and spins.shape[0]:
+        final = postprocess(bound, spins)
+        if final is not None and final.shape[0]:
+            spins = np.vstack([final.astype(np.int8), spins])
+    energies = bound.energies_milli(spins)
+    solutions = [
+        miner_pb2.Solution(spins=packed, energy_milli=int(e))
+        for packed, e in zip(pack_spin_rows(spins), energies.tolist())
+    ]
+    return [
+        miner_pb2.MinerMsg(
+            result=miner_pb2.Result(
+                job_id=job_id,
+                solutions=solutions,
+                meta=sampler_meta(result, num_sweeps),
+            )
+        ),
+        miner_pb2.MinerMsg(job_request=miner_pb2.JobRequest(credits=1)),
+    ]
 
 
 def _resolve_problem(
@@ -464,8 +528,13 @@ def handle_job(
     session_target: Optional["miner_pb2.SetTarget"] = None,
     session_sweeps: int = DEFAULT_NUM_SWEEPS,
     session_defaults: SamplingDefaults = SamplingDefaults(),
+    postprocess: Optional[Callable[[BoundInstance, np.ndarray], Optional[np.ndarray]]] = None,
 ) -> List[miner_pb2.MinerMsg]:
     """Validate and solve one job; return Result+JobRequest or Reject messages.
+
+    A job that binds an accepted family (``families.bind``) is sampled on the
+    instance's native qubits and reported with exact plain-model energies;
+    ``postprocess`` then sees its raw reads.
 
     Validation runs in two steps that raise :class:`_Rejected` rather than
     returning early, so every reject reason converges on one exit here.
@@ -478,15 +547,21 @@ def handle_job(
     """
     job_id = job.job_id
     try:
-        ising, h, j_vals = _validate_job(job, session_hash)
-        nodes, h_arr, edges, j_arr = _resolve_problem(
-            ising,
-            h,
-            j_vals,
-            session_nodes,
-            session_edges,
-            job_id=job_id,
-        )
+        ising, h_milli, j_milli, bound = _validate_job(job, session_hash)
+        if bound is not None:
+            _fit_bound(bound, sampler, job_id=job_id)
+            nodes, edges = bound.node_ids, bound.edges
+            h_arr = bound.h_milli / 1000.0
+            j_arr = bound.j_milli / 1000.0
+        else:
+            nodes, h_arr, edges, j_arr = _resolve_problem(
+                ising,
+                [v / 1000.0 for v in h_milli],
+                [v / 1000.0 for v in j_milli],
+                session_nodes,
+                session_edges,
+                job_id=job_id,
+            )
         warm_start = _resolve_warm_start(
             ising, len(nodes), session_defaults, job_id=job_id
         )
@@ -535,4 +610,6 @@ def handle_job(
             "job %s: sampler raised; rejecting OVERLOADED", job_id.hex()
         )
         return _reject(job_id, miner_pb2.OVERLOADED)
+    if bound is not None:
+        return _build_family_result(job_id, bound, result, num_sweeps, postprocess)
     return _build_result(job_id, nodes, result, num_sweeps)
