@@ -7,7 +7,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-11-05T03:04:08.619107874Z"
+exclude-newer = "2026-11-05T03:48:09.780206368Z"
 exclude-newer-span = "P1W"
 
 [options.exclude-newer-package]
@@ -2079,17 +2079,17 @@ wheels = [
 
 [[package]]
 name = "quip-solver-core"
-version = "0.0.11"
+version = "0.0.12rc1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "grpcio" },
     { name = "protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/68/1e/641307baf8ad0d1a168f86edc10afe2bc728a1ff2a78df680eab4c60b554/quip_solver_core-0.0.11.tar.gz", hash = "sha256:a5b4cbbce3bb8622743328dc73b0e577d73d0396eb1f3e21c49502fe3bb59b1b", size = 794286, upload-time = "2026-11-11T22:57:43.506Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b0/36/f0b1093a3c7d25323cc3b1d90ba0faced235690c1ea4507384abaf605463/quip_solver_core-0.0.12rc1.tar.gz", hash = "sha256:fcfd06f58ec5b237745489045bb472e69c223c9aeb403b9040f17f8433c61c48", size = 796455, upload-time = "2026-11-12T03:31:23.105Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b8/02/e3c17d167b1afc715c9df2ad9375188e48e51de836de051078eb9b5cb19c/quip_solver_core-0.0.11-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:5db365db81a4ca89a5c013efbf718b4e9c7aedce655536a3dd293979271a0b8e", size = 487044, upload-time = "2026-11-11T22:57:39.126Z" },
-    { url = "https://files.pythonhosted.org/packages/71/5c/b8459cfab84aed671e0773f27b98d6a9c8bec4b557722d67279689c197da/quip_solver_core-0.0.11-cp311-abi3-manylinux_2_34_aarch64.whl", hash = "sha256:1c1530a1c46254c8062737f91fb3c7c48b86485f926715dfcd0ed62b6ba093a5", size = 527129, upload-time = "2026-11-11T22:57:40.319Z" },
-    { url = "https://files.pythonhosted.org/packages/87/f2/4d72bdfa7cd671d447adaffa87f04ca82ded91ee5a5816f0ff9368ea4c9f/quip_solver_core-0.0.11-cp311-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:2d2f693d01e87ccc5d646e924664400b3652126a7ec63f80d7144d61e0dcee85", size = 547187, upload-time = "2026-11-11T22:57:41.835Z" },
+    { url = "https://files.pythonhosted.org/packages/a5/b6/0b8cde94f3bbd8a4216ec48c2baa516d0870965a2c3d3bdfe9f8f7775d99/quip_solver_core-0.0.12rc1-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:c69f8799fb5cca1dcc25d36bf6978f61d4fce8d779631c030901bd3b610c2b2c", size = 521124, upload-time = "2026-11-12T03:31:17.877Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/b9/69ac35de03134d087f04aa640243ee1b39853a568fe8195633c55c79e405/quip_solver_core-0.0.12rc1-cp311-abi3-manylinux_2_34_aarch64.whl", hash = "sha256:4775fe682ad7306a58a2d3e4c7a78ca887e29bd24ec10d5af9c5607bbeddf258", size = 561090, upload-time = "2026-11-12T03:31:19.736Z" },
+    { url = "https://files.pythonhosted.org/packages/69/86/c2b2bc19bd153350af7b73a8d8c6fc3274bb19575925ba0a7713afa6c93c/quip_solver_core-0.0.12rc1-cp311-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:afa6c8e29da938fa3adc941f27a67da92a37a6134070ef1fed8213f20cef4aea", size = 584717, upload-time = "2026-11-12T03:31:21.192Z" },
 ]
 
 [[package]]
@@ -2116,7 +2116,7 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'dev'", specifier = ">=3.9,<4" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
-    { name = "quip-solver-core", specifier = "==0.0.11" },
+    { name = "quip-solver-core", specifier = "==0.0.12rc1" },
 ]
 provides-extras = ["dev"]
 
