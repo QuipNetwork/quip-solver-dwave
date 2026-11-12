@@ -365,50 +365,22 @@ the wrong read count stops both capture resume and the report. The report
 requires a complete control cell and states which solver range checks lack
 data.
 
-## Cascade pipeline (QPU-seeded cascade)
+## Chain captures
 
-Five scripts feed and judge the cascade lease miner `quip-cuda-cascade`, and
-they give its survivors to the QPU. No production code path of the miner
-imports them. Keep the data outside the repository, under
-`~/quip-data/cascade/`.
+Two scripts work with the models of the chain. No production code path of
+the miner imports them. Keep the data outside the repository.
 
-Run them in this order:
-
-1. `scripts/chain_fetch.py` fetches the latest qblocks of the chain and writes
-   them with their rounds. It spends no QPU time.
-2. `scripts/cascade_gates.py` sets the gates of the screen from winner traces
-   (`msa`), and the table of QPU gate cuts from QPU captures (`qpu`). It
-   spends no QPU time.
-3. `scripts/chain_qpu_capture.py` samples chain models on the QPU and keeps
-   every read.
-4. `scripts/cascade_sidecar.py` is the QPU sidecar that the miner starts. It
-   answers each survivor that passes the screen with `deep` or `drop`, and it
-   journals the run. It runs for days with nobody at the terminal.
-5. `scripts/cascade_wins.py` reads the journals of the sidecars and the recent
-   rounds of the chain, and writes the win estimate of each arm. It spends no
-   QPU time.
-
-Only `chain_qpu_capture.py` and `cascade_sidecar.py` spend QPU time, and both
-need the `quip_msa` wheel from quip-miner-cpu to draw the model of a nonce.
+- `scripts/chain_fetch.py` fetches the latest qblocks of the chain and writes
+  them with their rounds. It spends no QPU time.
+- `scripts/chain_qpu_capture.py` samples chain models on the QPU and keeps
+  every read. It needs the `quip_msa` wheel from quip-miner-cpu to draw the
+  model of a nonce.
 
 `chain_qpu_capture.py` prints the estimate with `--dry-run`, refuses to submit
 without `--yes`, and stops at `--cap-seconds`. It keeps a spend journal in
 `spend.jsonl`. The journal gets a line with the reservation before each job and
 a line with the charge directly after the answer. The script refuses to start
 while the journal holds a reservation that nobody settled.
-
-`cascade_sidecar.py` refuses to run without `--yes`. The cap, `--qpu-seconds`,
-and the end of the pace, `--spend-until`, have no default. The sidecar keeps the
-same spend journal in its `--out-dir`, and the cap counts the spend of the whole
-out-dir. A lock on the out-dir lets one sidecar run at a time, so each card
-needs its own out-dir and its own share of the budget. The pace spreads the cap
-evenly from the first launch on the out-dir to `--spend-until`, and a restart
-does not reset it. A failure on the QPU side does not stop the sidecar. It runs
-the survivor on `gpu-256` and journals a `qpu_error`. The QPU then stays off
-until a retry of the connection works. With `--mock` the sidecar runs the same
-path on a fake QPU and calls no QPU. It still writes fake charges to the spend
-journal, so it refuses an out-dir that a launch with the other `--mock` value
-started.
 
 ## QPU-aware postprocess (`crates/qpp`)
 
