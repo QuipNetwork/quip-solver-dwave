@@ -294,6 +294,12 @@ it.
   `grace_ms - min(grace_ms / 4, 250)`. A stream that closes abandons the
   lease, with no `LeaseDone`. A lease that arrives after a `Cancel` covers its
   generation gets a `LeaseDone` with zero salts.
+- **Postprocess.** A `[postprocess]` table in `backend_toml` sends the reads
+  of a family salt to the policy of its family (`postprocess.py`). The
+  `qpp-race768/1` policy runs on the twisted-ice dimer salts. The salt frees
+  its QPU slot first, and its host work runs on the executor of the
+  postprocessor. Each trial keeps its raw reads on disk.
+  [docs/family-postprocess.md](docs/family-postprocess.md) gives the rules.
 - **Refunds.** The refund follows the same rules as the refill of a plain
   job. If the solver goes offline during the lease, the session parks the
   refund until the next qblock. If the budget gate refuses the job, the

@@ -29,7 +29,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 import numpy as np
 
@@ -39,6 +39,14 @@ BINARY_NAME = "quip-dwave-qpp"
 
 class QppError(RuntimeError):
     """The binary refused the input (exit 1) or found a bookkeeping defect (exit 2)."""
+
+
+class QppStopped(QppError):
+    """``stop`` became true while the binary ran, and the run was killed."""
+
+
+#: How often :func:`run` checks ``stop`` while the binary runs.
+POLL_S = 0.02
 
 
 @dataclass(frozen=True)
@@ -139,15 +147,18 @@ def run(
     mask: Optional[np.ndarray] = None,
     binary: "str | Path | None" = None,
     workdir: "str | Path | None" = None,
+    stop: Optional[Callable[[], bool]] = None,
     **params: Any,
 ) -> QppResult:
     """Run one postprocess on ``seeds`` (``K`` rows of ``n`` ±1 spins).
 
     ``params`` are the binary's ``key=value`` options (``sweeps``, ``b0``,
     ``b1``, ``seed``, ``seed_index``, ``stages``, ``pop_first``,
-    ``pop_count`` and the rest). ``mask`` marks the free spins.
+    ``pop_count`` and the rest). ``mask`` marks the free spins. ``stop`` is
+    polled while the binary runs; when it turns true the binary is killed.
 
     Raises:
+        QppStopped: ``stop`` turned true.
         QppError: The binary failed, or its best state does not rescore on
             the host to the energy it reported.
     """
@@ -169,10 +180,24 @@ def run(
             free.astype(np.uint8).tofile(d / "mask.bin")
             args.append(f"mask={d / 'mask.bin'}")
         cmd = [str(exe), str(d / "model.bin"), str(d / "seeds.bin"), str(d / "out.bin"), mode, *args]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        with subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        ) as proc:
+            while True:
+                try:
+                    stdout, stderr = proc.communicate(timeout=POLL_S)
+                    break
+                except subprocess.TimeoutExpired:
+                    if stop is not None and stop():
+                        proc.kill()
+                        proc.communicate()
+                        raise QppStopped(f"{BINARY_NAME} stopped before it finished") from None
         if proc.returncode != 0:
-            raise QppError(f"{BINARY_NAME} exited {proc.returncode}: {proc.stderr.strip()}")
-        report = json.loads(proc.stdout)
+            raise QppError(f"{BINARY_NAME} exited {proc.returncode}: {stderr.strip()}")
+        try:
+            report = json.loads(stdout)
+        except json.JSONDecodeError as exc:
+            raise QppError(f"{BINARY_NAME} wrote no JSON report: {exc}") from None
         state = np.fromfile(d / "out.bin", dtype=np.int8)
     if state.shape != (model.n,):
         raise QppError(f"{BINARY_NAME} returned {state.size} spins for a {model.n}-spin model")

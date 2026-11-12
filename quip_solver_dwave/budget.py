@@ -69,6 +69,7 @@ DWAVE_CONFIG_KEYS = frozenset(
         "queue_depth",
         "min_throughput_advantage",
         "participation_chance",
+        "postprocess",
     }
 )
 

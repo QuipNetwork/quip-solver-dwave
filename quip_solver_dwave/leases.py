@@ -159,6 +159,8 @@ class SaltProblem:
     j_milli: np.ndarray
     #: The family instance offset; zero on a legacy lease.
     offset_milli: int = 0
+    #: The family instance metadata region (FAM-34); empty on a legacy lease.
+    metadata: bytes = b""
 
     @property
     def edges(self) -> np.ndarray:
@@ -275,6 +277,7 @@ class AdmittedLease:
             positions=np.asarray(instance.edges, dtype=np.intp).reshape(-1, 2),
             j_milli=np.asarray(instance.j, dtype=np.int64),
             offset_milli=int(instance.offset_milli),
+            metadata=bytes(instance.metadata),
         )
 
 
@@ -450,7 +453,9 @@ class LeaseHooks:
     ``may_draw`` asks the budget whether another salt may go to the QPU.
     ``refund`` returns the credit refund to send with the ``LeaseDone``, or
     nothing when the session holds the credit back. ``sampled`` counts a
-    sampled salt in ``Status.jobs_done``.
+    sampled salt in ``Status.jobs_done``. ``postprocess``, when set, takes a
+    salt's raw reads and a stop check, and returns final states to report
+    beside them, or ``None`` when its trial did not succeed.
     """
 
     sample_salt: Callable[[SaltProblem], Optional[Tuple[np.ndarray, miner_pb2.SamplerMeta]]]
@@ -461,6 +466,9 @@ class LeaseHooks:
     may_draw: Callable[[], bool]
     refund: Callable[[], List[miner_pb2.MinerMsg]]
     sampled: Callable[[], None]
+    postprocess: Optional[
+        Callable[[SaltProblem, np.ndarray, Callable[[], bool]], Optional[np.ndarray]]
+    ] = None
 
 
 class _Ledger:
@@ -538,13 +546,16 @@ def run_lease(
     *,
     slots: threading.Semaphore,
     submit: Callable[..., object],
+    host_submit: Optional[Callable[..., object]] = None,
 ) -> None:
     """Sample every salt of ``lease``, then send its ``LeaseDone`` and refund.
 
     Runs on the lease's own thread. Each salt takes a permit from ``slots``,
     the session-wide bound on salts in flight, before it is drawn, and gives
     it back when its sampling ends. ``submit(fn, problem)`` runs a salt on the
-    session's job pool. No salt is drawn after a stop.
+    session's job pool. A salt with a postprocess hands its host work to
+    ``host_submit(fn, ...)``, so the job pool worker, which stands for one
+    QPU submission, is free for the next salt. No salt is drawn after a stop.
     """
     ledger = _Ledger()
     no_more = threading.Event()
@@ -558,33 +569,72 @@ def run_lease(
             halted() or no_more.is_set() or hooks.aborted() or hooks.close_at() is not None
         )
 
+    def finishing() -> bool:
+        """The processor of a salt stops on any stop, a Shutdown close included."""
+        close_at = hooks.close_at()
+        return (
+            halted()
+            or hooks.aborted()
+            or (close_at is not None and time.monotonic() >= close_at)
+        )
+
+    def report(problem: SaltProblem, spins: np.ndarray, meta: miner_pb2.SamplerMeta) -> None:
+        energies = problem.energies_milli(spins)
+
+        def send_result() -> None:
+            hooks.send([salt_result(lease, problem, spins, energies, meta)])
+
+        if ledger.complete(
+            problem.index,
+            energies,
+            accept=lambda: not (halted() or hooks.aborted()),
+            send_result=send_result,
+        ):
+            hooks.sampled()
+
+    def host_work(problem: SaltProblem, spins: np.ndarray, meta: miner_pb2.SamplerMeta) -> None:
+        try:
+            assert hooks.postprocess is not None
+            final = hooks.postprocess(problem, spins, finishing)
+            if final is not None and final.shape[0]:
+                # Final states first, then every raw read, unfiltered.
+                spins = np.vstack([final.astype(np.int8), spins])
+            report(problem, spins, meta)
+        except Exception:  # noqa: BLE001 - a salt must always be counted finished
+            logger.exception("lease %s salt %d postprocess failed", lease.job_id.hex(), problem.index)
+        finally:
+            ledger.finish_one()
+
     def work(problem: SaltProblem) -> None:
+        handed_off = False
         try:
             try:
                 outcome = hooks.sample_salt(problem)
             except StopDrawing:
                 no_more.set()
                 outcome = None
+            finally:
+                # The QPU part of the salt is over, and billed: its slot goes
+                # to the next salt before any host work starts.
+                slots.release()
             if outcome is None:
                 return
             spins, meta = outcome
-            energies = problem.energies_milli(spins)
-
-            def send_result() -> None:
-                hooks.send([salt_result(lease, problem, spins, energies, meta)])
-
-            if ledger.complete(
-                problem.index,
-                energies,
-                accept=lambda: not (halted() or hooks.aborted()),
-                send_result=send_result,
-            ):
-                hooks.sampled()
-        except Exception:  # noqa: BLE001 - a salt must always give its permit back
+            if hooks.postprocess is not None and spins.shape[0]:
+                run_host = host_submit or (lambda fn, *args: fn(*args))
+                handed_off = True
+                try:
+                    run_host(host_work, problem, spins, meta)
+                except RuntimeError:
+                    # The host pool shut down: the session is ending.
+                    handed_off = False
+                return
+            report(problem, spins, meta)
+        except Exception:  # noqa: BLE001 - a salt must always be counted finished
             logger.exception("lease %s salt %d failed", lease.job_id.hex(), problem.index)
         finally:
-            slots.release()
-            ledger.finish_one()
+            if not handed_off:
+                ledger.finish_one()
 
     for index in range(lease.salt_count):
         acquired = False

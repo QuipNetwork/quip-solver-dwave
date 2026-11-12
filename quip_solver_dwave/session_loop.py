@@ -16,7 +16,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, Iterator, Optional, Tuple
+from typing import Any, Callable, Iterator, Optional, Tuple
 
 import grpc
 
@@ -72,6 +72,12 @@ from quip_solver_dwave.leases import (
 )
 from quip_solver_core.session import DEFAULT_NUM_SWEEPS, num_sweeps_from_toml
 from quip_solver_dwave.ocean import OceanSampler, is_solver_offline, is_solver_unavailable
+from quip_solver_dwave.postprocess import (
+    OK as TRIAL_OK,
+    PostprocessConfigInvalid,
+    Postprocessor,
+    postprocess_config_from_toml,
+)
 from quip_solver_dwave.schedule import ScheduleError
 from quip_solver_dwave.profile import SnapshotRefresher
 from quip_solver_dwave.strategy import (
@@ -847,6 +853,8 @@ def run_session(
     lease_close_at: Optional[float] = None
     # Set when the session ends without a Shutdown: leases are abandoned.
     leases_aborted = threading.Event()
+    # The family postprocess, when backend_toml configures one.
+    postprocessor: Optional[Postprocessor] = None
 
     def process_job(job, s_nodes, s_edges, s_hash, s_target, s_sweeps, s_defaults):
         # Runs on a pool thread: sample (blocking on the QPU), then enqueue
@@ -1165,6 +1173,34 @@ def run_session(
             with state_lock:
                 jobs_done += 1
 
+        family_id = admitted.family.family_id if admitted.family is not None else None
+        processor = postprocessor
+        postprocess: Optional[Callable[..., Any]] = None
+        if processor is not None and processor.policy_for(family_id) is not None:
+            assert family_id is not None
+
+            def postprocess_salt(problem, spins, stop):
+                # Runs after the salt is billed and its QPU slot is free.
+                # Only a successful trial adds states; a failed or stopped one
+                # leaves its record and the raw reads alone.
+                trial = processor.run(
+                    job_id=admitted.job_id,
+                    salt_index=problem.index,
+                    family_id=family_id,
+                    nonce=problem.nonce,
+                    nodes=problem.nodes,
+                    positions=problem.positions,
+                    h_milli=problem.h_milli,
+                    j_milli=problem.j_milli,
+                    metadata=problem.metadata,
+                    raw_spins=spins,
+                    raw_energies=problem.energies_milli(spins),
+                    stop=stop,
+                )
+                return trial.final_spins if trial.outcome == TRIAL_OK else None
+
+            postprocess = postprocess_salt
+
         return LeaseHooks(
             sample_salt=sample_salt,
             send=out_q.put,
@@ -1174,6 +1210,7 @@ def run_session(
             may_draw=may_draw,
             refund=refund,
             sampled=sampled,
+            postprocess=postprocess,
         )
 
     def lease_main(job, s_topology, s_target, s_sweeps, s_defaults, slots) -> None:
@@ -1207,6 +1244,7 @@ def run_session(
                 )
                 return
             pool = job_pool
+            host = postprocessor
 
             def submit(fn, problem):
                 if pool is None:
@@ -1214,11 +1252,16 @@ def run_session(
                 else:
                     pool.submit(fn, problem).add_done_callback(_surface_pool_failure)
 
+            def host_submit(fn, *args):
+                assert host is not None
+                host.submit(fn, *args).add_done_callback(_surface_pool_failure)
+
             run_lease(
                 admitted,
                 lease_hooks(admitted, s_target, s_sweeps, s_defaults),
                 slots=slots,
                 submit=submit,
+                host_submit=host_submit if host is not None else None,
             )
         except Exception:
             # No LeaseDone or refund can be trusted after this; the log line
@@ -1350,6 +1393,34 @@ def run_session(
                             _attach_round_strategy(
                                 gate, refresher, cm.configure.backend_toml
                             )
+                try:
+                    pp_config = postprocess_config_from_toml(cm.configure.backend_toml)
+                    if pp_config is not None:
+                        postprocessor = Postprocessor(pp_config)
+                        logger.info(
+                            "[QPU] postprocess: %s, records in %s, %d at once (%s)",
+                            ", ".join(
+                                f"{fid} -> {p.name}" for fid, p in pp_config.policies.items()
+                            ),
+                            pp_config.records,
+                            pp_config.threads,
+                            postprocessor.identity,
+                        )
+                except (PostprocessConfigInvalid, OSError) as exc:
+                    # Explicit configuration: a postprocess that cannot run
+                    # is not quietly replaced by raw reads.
+                    logger.error("postprocess config: %s", exc)
+                    out_q.put(
+                        miner_pb2.MinerMsg(
+                            fatal=miner_pb2.Fatal(
+                                exit_code=EXIT_CONFIG_INVALID,
+                                reason=f"postprocess config: {exc}",
+                                restart_required=False,
+                            )
+                        )
+                    )
+                    exit_code = EXIT_CONFIG_INVALID
+                    break
                 out_q.put(miner_pb2.MinerMsg(ready=miner_pb2.Ready()))
                 # Read straight off the wire, not off SessionConfig: the SDK
                 # substitutes its own default of 3 for an unset field, which
@@ -1728,6 +1799,10 @@ def run_session(
         # end-of-outbound marker, bounded by the grace window.
         if job_pool is not None:
             job_pool.shutdown(wait=True)
+        # Every lease is closed or abandoned now, so each running processor
+        # sees its stop and is killed; this join is short.
+        if postprocessor is not None:
+            postprocessor.close()
         # Last sweep: a charge estimated after the final job's own drain would
         # otherwise die with the process and under-count the period.
         _bill_unobserved(sampler, pending_budget)
@@ -1755,6 +1830,8 @@ def run_session(
         leases_aborted.set()
         if job_pool is not None:
             job_pool.shutdown(wait=False, cancel_futures=True)
+        if postprocessor is not None:
+            postprocessor.executor.shutdown(wait=False, cancel_futures=True)
         try:
             out_q.put(_STOP)
         except Exception:  # noqa: BLE001

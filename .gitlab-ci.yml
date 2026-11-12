@@ -44,6 +44,10 @@ conformance:
   script:
     - cargo install --locked quip-solver-conformance --version 0.0.12-rc1
     - QUIP_SOLVER_DRIVE="$CARGO_HOME/bin/quip-solver-drive" /opt/venv/bin/pytest quip_solver_dwave/tests/test_conformance.py -v
+    # The family postprocess against the real quip-dwave-qpp; the main test
+    # job runs the same file with a fake processor and skips this one case.
+    - cargo build --manifest-path crates/qpp/Cargo.toml --locked --release
+    - QUIP_DWAVE_QPP="$PWD/crates/qpp/target/release/quip-dwave-qpp" /opt/venv/bin/pytest quip_solver_dwave/tests/test_family_postprocess.py -v
 
 # The QPU-aware postprocessor in crates/qpp. clippy and the Rust tests,
 # including the golden vectors of the C++ prototype it ports, then the
