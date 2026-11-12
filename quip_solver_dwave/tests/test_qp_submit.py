@@ -8,10 +8,13 @@ guess about SAPI.
 
 from __future__ import annotations
 
+import base64
 import json
 
+import numpy as np
 import pytest
 
+from quip_solver_dwave.ocean import OceanSampler
 from quip_solver_dwave.qp import build_submission_body
 
 
@@ -102,3 +105,85 @@ def test_the_body_is_bytes_ready_for_the_transport():
     body = build_submission_body(solver, _DATA, {"num_reads": 1}, label=None)
 
     assert isinstance(body, (bytes, bytearray))
+
+
+# --- auto_scale on the real submit path -------------------------------------
+#
+# Round 2 always submits pre-scaled physical coefficients (Task 6) and must
+# stop SAPI from rescaling them again. These tests pin what actually reaches
+# the wire, mirroring the fixture pattern in test_anneal_submit.py's
+# _cloud_sampler: only the hand-off to the cloud client is stubbed.
+
+
+class _AutoScaleDone:
+    """A finished cloud problem, shaped like dwave.cloud.computation.Future."""
+
+    samples = np.array([[1, -1]], dtype=np.int8)
+    energies = [-1.5]
+    num_occurrences = [1]
+    variables = [0, 1]
+    timing = {"qpu_programming_time": 100, "qpu_sampling_time": 50}
+
+    def done(self):
+        return True
+
+
+def _submit_with_auto_scale(auto_scale):
+    class _Identity2:
+        def dict(self):
+            return {"name": "FakeSolver", "version": {"graph_id": "abc123"}}
+
+    class _Solver2:
+        _encoding_qubits = [0, 1]
+        _encoding_couplers = [(0, 1)]
+        _params: dict = {}
+        parameters = {"num_reads": None, "auto_scale": None, "label": None}
+        properties: dict = {}
+        identity = _Identity2()
+
+        def _format_params(self, type_, params):
+            pass
+
+    class _Sampler2:
+        solver = _Solver2()
+
+    s = OceanSampler(mock=False)
+    s._connected = True
+    s._is_mock = False
+    s.sampler = _Sampler2()
+
+    bodies = []
+
+    def _submit_encoded(solver, body, cancel_key):
+        bodies.append(json.loads(body))
+        return _AutoScaleDone()
+
+    s._submit_encoded = _submit_encoded  # type: ignore[method-assign]
+    kwargs = {} if auto_scale is None else {"auto_scale": auto_scale}
+    s.sample(
+        np.array([0, 1]), np.array([1.0, -1.0]), np.array([(0, 1)]), np.array([0.5]),
+        num_reads=4, **kwargs,
+    )
+    s.close()
+    return bodies[0]
+
+
+@pytest.fixture
+def submitted_body():
+    """The encoded body of one submission with ``auto_scale=False``."""
+    return _submit_with_auto_scale(False)
+
+
+def test_explicit_physical_scaling_disables_server_rescaling(submitted_body):
+    assert submitted_body["params"]["auto_scale"] is False
+
+
+def test_explicit_physical_scaling_preserves_the_encoded_coefficients(submitted_body):
+    lin = np.frombuffer(base64.b64decode(submitted_body["data"]["lin"]), dtype="<f8")
+    assert lin.tolist() == [1.0, -1.0]
+
+
+def test_auto_scale_is_omitted_from_the_wire_when_not_given():
+    body = _submit_with_auto_scale(None)
+
+    assert "auto_scale" not in body["params"]

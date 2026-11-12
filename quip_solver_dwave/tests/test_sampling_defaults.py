@@ -75,3 +75,21 @@ def test_each_dimension_falls_back_independently():
         _ising(), None, SWEEPS, SamplingDefaults(anneal_time_us=80)
     )
     assert (reads, anneal) == (1, 80)
+
+
+def test_the_reverse_anneal_keys_are_read_from_the_config():
+    got = sampling_defaults_from_toml("reversal_s_milli = 450\nreversal_pause_us = 80\n")
+    assert got == SamplingDefaults(reversal_s_milli=450, reversal_pause_us=80)
+
+
+def test_a_reversal_point_of_one_thousand_milli_or_more_is_ignored():
+    # The wire rejects it as malformed, so applying it as a default would
+    # turn every seeded job into a reject.
+    got = sampling_defaults_from_toml("reversal_s_milli = 1000\n")
+    assert got == SamplingDefaults()
+
+
+def test_the_reverse_anneal_keys_are_known_to_the_dwave_schema():
+    from quip_solver_dwave.budget import DWAVE_CONFIG_KEYS
+
+    assert {"reversal_s_milli", "reversal_pause_us"} <= DWAVE_CONFIG_KEYS

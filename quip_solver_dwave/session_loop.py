@@ -23,8 +23,6 @@ import grpc
 from quip_solver_core import miner_pb2, miner_pb2_grpc, session as session_sdk
 
 from quip_solver_dwave import (
-    ALGORITHM,
-    BACKEND,
     EXIT_CLEAN,
     EXIT_CONFIG_INVALID,
     EXIT_INTERNAL_FATAL,
@@ -32,7 +30,6 @@ from quip_solver_dwave import (
     FEATURES,
     MAX_EDGES,
     MAX_NODES,
-    SOLVER_ID,
 )
 from quip_solver_dwave.attempts import (
     default_attempts_dir,
@@ -624,6 +621,15 @@ def _is_abandoned(generation: int, watermark: int) -> bool:
     the coordinator's reseed watermark. Mirrors the Rust ``CancelToken``.
     """
     return generation != 0 and generation <= watermark
+
+
+# Wire identity (Capabilities.backend / .algorithm / .solver_id). The enums'
+# stable names are "dwave-qpu" and "quantum-anneal" in
+# quip_solver_core.session.BACKEND_NAMES / ALGORITHM_NAMES. They live here, not
+# in the package root, so importing quip_solver_dwave never needs the SDK.
+BACKEND = miner_pb2.BACKEND_DWAVE_QPU
+ALGORITHM = miner_pb2.ALGORITHM_QUANTUM_ANNEAL
+SOLVER_ID = "quip-solver-dwave"
 
 
 def capabilities_message(

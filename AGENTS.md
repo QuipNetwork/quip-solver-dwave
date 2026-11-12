@@ -143,6 +143,20 @@ and reads it through `.sampleset`. The new one builds a `Future` with
 4577 qubits and 41514 couplers and 48 reads, the old configuration costs
 38.8 ms a job. The new one costs 1.6 ms, a factor of 24.
 
+### One spelling for the anneal
+
+`OceanSampler._anneal_params` is the only place that turns `anneal_time_us`
+and a warm start into SAPI parameters, and it never emits `annealing_time`.
+SAPI refuses a problem that carries both forms, and a reverse anneal has no
+`annealing_time` form. `schedule.py` holds the rules, and `warm.py` decodes
+`IsingProblem.initial_spins`.
+
+Two traps. `initial_state` must reach `build_submission_body` as SAPI's
+per-qubit list, not as a label-to-spin mapping: orjson refuses integer keys.
+And the offline mock answers a seeded job by descent from the seed
+(`descend_from`), because the conformance driver's seeded ring has 4096 spins
+and `ExactSolver` enumerates every state.
+
 One trap sits on this path. `Future.samples` returns a matrix padded out to
 the solver's full physical qubit count, while `Future.variables` returns only
 the active labels. The reader must pick the columns by label. That
@@ -246,6 +260,117 @@ jobs with `TOPOLOGY_MISMATCH`.
 `--capabilities` prints `session_loop.capabilities_json`, the same JSON object
 that a Rust solver prints (`capabilities_json_from` in `session.rs`).
 
+## Measurement harness (QUI-1387 steps 5 to 7)
+
+Six scripts measure the hybrid pipeline against the recorded QPU attempts of a
+node. No production code path of the miner imports them. They need the
+`quip_msa` wheel from quip-miner-cpu. Keep the data outside the repository, in
+one directory such as `~/quip-data/qui-1387/`. That directory holds the
+topology spec, `attempts.csv`, and every output.
+
+Run them in this order:
+
+1. `scripts/fetch_attempts.py` reads the attempts logs of a node over ssh and
+   writes `attempts.csv`.
+2. `scripts/lite_dataset.py` rebuilds each model from its nonce and records the
+   MSA-lite energy and the rate at each sweep count.
+3. `scripts/lite_report.py` prints recall and false positives for each sweep
+   count and pass share, then writes `low-energy.nonces` and
+   `false-positive.nonces`.
+4. `scripts/heavy_replay.py` runs MSA at high sweeps on both lists through
+   `quip-coordinator drive` and quip-miner-cuda, then compares the two sets.
+5. `scripts/capture_qpu_reads.py` submits sampled models to the QPU and keeps
+   every read.
+6. `scripts/seeded_sweep.py` starts the MSA kernel from those reads at a range
+   of start betas, and compares each run with a cold run.
+
+Only `capture_qpu_reads.py` spends QPU time. It prints the estimate with
+`--dry-run`, refuses to submit without `--yes`, and stops at
+`--max-qpu-seconds`.
+
+## Regime search (round 1)
+
+Four scripts compare the QPU with the classical kernels on five problem
+regimes. The scripts call a regime a cell: `native-pm1`, `native-125`,
+`diamond-pm1`, `cubic-dimer-pm1`, and `clique-portfolio`. No production code
+path of the miner imports them. They need the `quip_msa` wheel from
+quip-miner-cpu. Keep the data outside the repository, under
+`~/quip-data/regimes/`.
+
+Run them in this order:
+
+1. `scripts/embed_probe.py` places the two lattices on the working graph and
+   finds the largest clique embedding that the graph holds. That clique sets
+   the asset count of `clique-portfolio`. The script spends no QPU time. With
+   `--solver-properties` it also reads the coupling ranges of the solver.
+2. `scripts/regime_capture.py` submits the models of one cell to the QPU and
+   keeps every read. Run one cell for each process.
+3. `scripts/regime_ladder.py` runs the classical kernel on the same models at
+   each rung of a sweep ladder. After a capture it also runs the extra rung
+   for each unmatched model, and the seed arm.
+4. `scripts/regime_report.py` writes one table for each metric. It stops
+   when a cell lacks a capture or a run of the ladder.
+
+Only `regime_capture.py` spends QPU time. It prints the estimate with
+`--dry-run` and refuses to submit without `--yes`. It keeps a spend journal
+for the round in `spend.jsonl`, and it counts the spend of every cell against
+`--max-qpu-seconds` before each job. It stops before any spend when the live
+chip lacks a qubit or a coupler of the cell. With `--mock` it runs the same
+path on an offline sampler and spends nothing.
+
+Each cell has a `manifest.json` that records what defines its data. A run
+with another topology order, embedding, read count, anneal time, or sampler
+kind stops. The ladder also checks its rungs, seed sweeps, and thread count.
+Only one capture process can hold a round at a time. A saved answer with
+the wrong read count stops both capture resume and the report. The report
+requires a complete control cell and states which solver range checks lack
+data.
+
+## Cascade pipeline (QPU-seeded cascade)
+
+Five scripts feed and judge the cascade lease miner `quip-cuda-cascade`, and
+they give its survivors to the QPU. No production code path of the miner
+imports them. Keep the data outside the repository, under
+`~/quip-data/cascade/`.
+
+Run them in this order:
+
+1. `scripts/chain_fetch.py` fetches the latest qblocks of the chain and writes
+   them with their rounds. It spends no QPU time.
+2. `scripts/cascade_gates.py` sets the gates of the screen from winner traces
+   (`msa`), and the table of QPU gate cuts from QPU captures (`qpu`). It
+   spends no QPU time.
+3. `scripts/chain_qpu_capture.py` samples chain models on the QPU and keeps
+   every read.
+4. `scripts/cascade_sidecar.py` is the QPU sidecar that the miner starts. It
+   answers each survivor that passes the screen with `deep` or `drop`, and it
+   journals the run. It runs for days with nobody at the terminal.
+5. `scripts/cascade_wins.py` reads the journals of the sidecars and the recent
+   rounds of the chain, and writes the win estimate of each arm. It spends no
+   QPU time.
+
+Only `chain_qpu_capture.py` and `cascade_sidecar.py` spend QPU time, and both
+need the `quip_msa` wheel from quip-miner-cpu to draw the model of a nonce.
+
+`chain_qpu_capture.py` prints the estimate with `--dry-run`, refuses to submit
+without `--yes`, and stops at `--cap-seconds`. It keeps a spend journal in
+`spend.jsonl`. The journal gets a line with the reservation before each job and
+a line with the charge directly after the answer. The script refuses to start
+while the journal holds a reservation that nobody settled.
+
+`cascade_sidecar.py` refuses to run without `--yes`. The cap, `--qpu-seconds`,
+and the end of the pace, `--spend-until`, have no default. The sidecar keeps the
+same spend journal in its `--out-dir`, and the cap counts the spend of the whole
+out-dir. A lock on the out-dir lets one sidecar run at a time, so each card
+needs its own out-dir and its own share of the budget. The pace spreads the cap
+evenly from the first launch on the out-dir to `--spend-until`, and a restart
+does not reset it. A failure on the QPU side does not stop the sidecar. It runs
+the survivor on `gpu-256` and journals a `qpu_error`. The QPU then stays off
+until a retry of the connection works. With `--mock` the sidecar runs the same
+path on a fake QPU and calls no QPU. It still writes fake charges to the spend
+journal, so it refuses an out-dir that a launch with the other `--mock` value
+started.
+
 ## Conventions
 
 - Comments explain why, especially why an obvious-looking simplification is
@@ -254,6 +379,15 @@ that a Rust solver prints (`capabilities_json_from` in `session.rs`).
 - Changes to billing, cancellation, or the encoder should be mutation-tested:
   revert the fix, confirm a specific test goes red, restore.
 - No LLM attribution trailers in commits.
+- Never write "milli" in prose, names, formulas, charts, or Notion. The
+  model files store couplers, fields, and energies as integer thousandths
+  (`j_milli`, `h_milli`, `best_milli`), but every written value uses the unit
+  of the full-strength coupler: 1,000 thousandths is +1 and −1,000 is −1
+  (binary couplers), while 460 is 0.460 and 62 is 0.062 (precision couplers,
+  three decimals). Energies are whole units, so one unit is the energy of one
+  coupler at full strength. Write `0.062 glass` and never `62 milli glass`.
+  Identifiers in code keep their `_milli` suffix. The formatter is
+  `coupler()` in `new-pow/notion/build_pages.py`. Operator ruling 2026-10-27.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker

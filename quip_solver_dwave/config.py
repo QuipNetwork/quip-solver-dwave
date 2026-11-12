@@ -57,14 +57,18 @@ class SamplingDefaults:
     here and leaves the next rung down in charge.
 
     ``anneal_time_us`` at 0 leaves D-Wave's own default anneal in place.
+    ``reversal_s_milli`` and ``reversal_pause_us`` apply only to a job that
+    carries a start state, and at 0 leave the built-in reverse anneal in place.
     """
 
     num_reads: int = 0
     anneal_time_us: int = 0
+    reversal_s_milli: int = 0
+    reversal_pause_us: int = 0
 
 
 def sampling_defaults_from_toml(toml_text: str) -> SamplingDefaults:
-    """Read ``num_reads`` and ``anneal_time_us`` from ``backend_toml``.
+    """Read the sampling keys from ``backend_toml``.
 
     A malformed document yields the empty defaults rather than raising: the
     budget parser is the one that refuses to run on unparseable config (an
@@ -81,7 +85,25 @@ def sampling_defaults_from_toml(toml_text: str) -> SamplingDefaults:
     return SamplingDefaults(
         num_reads=_non_negative(data, "num_reads"),
         anneal_time_us=_non_negative(data, "anneal_time_us"),
+        reversal_s_milli=_reversal_s_milli(data),
+        reversal_pause_us=_non_negative(data, "reversal_pause_us"),
     )
+
+
+def _reversal_s_milli(data: dict) -> int:
+    """Read ``reversal_s_milli``, or 0 when unset or outside 1 to 999.
+
+    The reversal point is a fraction of the anneal strictly inside (0, 1). The
+    wire rejects 1000 or more as malformed, so an operator value that large is
+    a misconfiguration to report, not a default to apply to every seeded job.
+    """
+    value = _non_negative(data, "reversal_s_milli")
+    if value >= 1000:
+        logger.warning(
+            "ignoring reversal_s_milli=%d from config: expected 1 to 999", value
+        )
+        return 0
+    return value
 
 
 def _non_negative(data: dict, key: str) -> int:

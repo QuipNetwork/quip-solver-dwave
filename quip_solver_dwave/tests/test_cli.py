@@ -31,7 +31,7 @@ def test_capabilities(capsys):
         "supportedKinds": ["ISING_SAMPLE"],
         "maxNodes": 10_000,
         "maxEdges": 100_000,
-        "features": ["quantum-anneal", "native-topology"],
+        "features": ["quantum-anneal", "native-topology", "initial-spins"],
         "protocolVersion": 2,
         "streamWidth": 1,
         "encodings": [

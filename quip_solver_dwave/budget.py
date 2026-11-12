@@ -64,6 +64,8 @@ DWAVE_CONFIG_KEYS = frozenset(
         "usage_db",
         "anneal_time_us",
         "num_reads",
+        "reversal_s_milli",
+        "reversal_pause_us",
         "queue_depth",
         "min_throughput_advantage",
         "participation_chance",

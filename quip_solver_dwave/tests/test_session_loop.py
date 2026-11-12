@@ -7,6 +7,9 @@ import logging
 import pytest
 
 from quip_solver_dwave.session_loop import (
+    ALGORITHM,
+    BACKEND,
+    SOLVER_ID,
     _is_abandoned,
     capabilities_message,
     log_attempt,
@@ -14,14 +17,7 @@ from quip_solver_dwave.session_loop import (
 )
 from quip_solver_core import miner_pb2
 
-from quip_solver_dwave import (
-    ALGORITHM,
-    BACKEND,
-    FEATURES,
-    MAX_EDGES,
-    MAX_NODES,
-    SOLVER_ID,
-)
+from quip_solver_dwave import FEATURES, MAX_EDGES, MAX_NODES
 
 
 def test_mempool_generation_is_never_abandoned():

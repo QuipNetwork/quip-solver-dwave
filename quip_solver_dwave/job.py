@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -13,6 +13,8 @@ from quip_solver_core.session import DEFAULT_NUM_SWEEPS
 from quip_solver_dwave import MAX_EDGES, MAX_NODES
 from quip_solver_dwave.config import SamplingDefaults
 from quip_solver_dwave.ocean import SampleResult, SupportsSample, is_solver_offline
+from quip_solver_dwave.schedule import ScheduleError
+from quip_solver_dwave.warm import MalformedWarmStart, WarmStart, warm_start_from_ising
 
 logger = logging.getLogger(__name__)
 
@@ -312,6 +314,26 @@ def _resolve_problem(
     )
 
 
+def _resolve_warm_start(
+    ising: miner_pb2.IsingProblem,
+    num_nodes: int,
+    session_defaults: SamplingDefaults,
+    *,
+    job_id: bytes,
+) -> Optional[WarmStart]:
+    """The job's warm start, or ``None`` for a cold job.
+
+    Raises:
+        _Rejected: ``MALFORMED`` for a state of the wrong length, a set padding
+            bit, or a reversal point of 1000 milli or more (SPEC section 3).
+    """
+    try:
+        return warm_start_from_ising(ising, num_nodes, session_defaults)
+    except MalformedWarmStart as exc:
+        logger.warning("job %s: %s; rejecting MALFORMED", job_id.hex(), exc)
+        raise _Rejected(miner_pb2.MALFORMED) from None
+
+
 def _sampling_params(
     ising: miner_pb2.IsingProblem,
     session_target: Optional["miner_pb2.SetTarget"],
@@ -325,7 +347,7 @@ def _sampling_params(
     then the hard-coded default. Zero means "unset" at every rung, so an
     operator's ``anneal_time_us`` applies to jobs the coordinator left blank
     without ever overriding one it filled in. ``anneal_time_us`` resolving to 0
-    means the QPU applies its hardware-default anneal. ``num_sweeps`` does not steer
+    means the solver's published default anneal. ``num_sweeps`` does not steer
     the QPU (an annealer runs anneals, not sweeps); it is the resolved budget
     the coordinator pinned, echoed in ``SamplerMeta.sweeps`` because the
     contract grades that echo verbatim (``sweeps_honoured``).
@@ -450,12 +472,18 @@ def handle_job(
             session_edges,
             job_id=job_id,
         )
+        warm_start = _resolve_warm_start(
+            ising, len(nodes), session_defaults, job_id=job_id
+        )
     except _Rejected as exc:
         return _reject(job_id, exc.reason)
 
     num_reads, anneal_time_us, num_sweeps = _sampling_params(
         ising, session_target, session_sweeps, session_defaults
     )
+    # Passed only when the job carries one, so a sampler double written before
+    # warm starts existed still serves every cold job.
+    warm_kwargs: Dict[str, Any] = {} if warm_start is None else {"warm_start": warm_start}
     try:
         result: SampleResult = sampler.sample(
             nodes,
@@ -463,7 +491,7 @@ def handle_job(
             edges,
             j_arr,
             num_reads=num_reads,
-            # 0 leaves annealing_time unset so the QPU default applies.
+            # 0 means the solver's own default anneal.
             anneal_time_us=anneal_time_us or None,
             # Use job_id bytes as the defect-clamp seed when present.
             nonce_seed=bytes(job_id) if job_id else None,
@@ -472,7 +500,13 @@ def handle_job(
             # session loop cancels by job id, so the seed cannot double as it:
             # a job with no defects is given no seed at all.
             cancel_key=bytes(job_id) if job_id else None,
+            **warm_kwargs,
         )
+    except ScheduleError as exc:
+        # The job asked for an anneal this chip cannot run. Resending it
+        # changes nothing, so it is not the transient OVERLOADED below.
+        logger.warning("job %s: %s; rejecting MALFORMED", job_id.hex(), exc)
+        return _reject(job_id, miner_pb2.MALFORMED)
     except Exception as exc:
         if is_solver_offline(exc):
             raise SolverUnavailable(job_id) from exc
