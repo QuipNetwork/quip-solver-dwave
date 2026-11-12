@@ -371,6 +371,38 @@ path on a fake QPU and calls no QPU. It still writes fake charges to the spend
 journal, so it refuses an out-dir that a launch with the other `--mock` value
 started.
 
+## QPU-aware postprocess (`crates/qpp`)
+
+`quip_solver_dwave.qpp` postprocesses QPU reads of the twisted-ice dimer
+cells. The numeric work runs in `quip-dwave-qpp`, a Rust binary in
+`crates/qpp`. The module gives the binary the model, the seed reads, and an
+optional freeze mask as files in a temporary directory. When the binary
+returns, the module rescores its best state on the host, and a state whose
+energy does not match the report raises `QppError`. The processor reads the tile and pair structure of these cells, so
+it lives here and not in quip-miner-cpu.
+
+The binary is a port of the C++ prototype of the 2026-11-11 study
+(`~/quip-data/regimes/qpu-aware-pp-20261111/src/qpp.cpp`). For the same
+inputs and seed it gives the same stdout and state, bit for bit, apart from
+the processor seconds. `tests/fixtures/golden.tsv` holds vectors from the
+prototype, and `tests/fixtures/make_golden.py` writes them again. Three
+details of the C++ program decide that parity, and a change to any of them
+moves the trajectory:
+
+- GCC fused `w0 + 4 * w1` into one FMA, so `single_ice` uses `mul_add`.
+- GCC evaluates the two `rng.below` arguments of a `join` call from right
+  to left, so the `neg` index takes the first draw.
+- The race sorts its population with the unstable `std::sort`, so
+  `cxxsort.rs` ports the libstdc++ introsort to keep the same tied states.
+
+`cluster_sweep` reads `parent[i]` after the path-halving finds, which is not
+always the root of `i`. The port keeps that read for parity.
+
+Build with `cargo build --manifest-path crates/qpp/Cargo.toml --release`.
+`qpp.find_binary` looks at `$QUIP_DWAVE_QPP`, then `PATH`, then that build.
+The CI job `qpp` runs clippy, the Rust tests, and `test_qpp.py` against the
+release binary.
+
 ## Conventions
 
 - Comments explain why, especially why an obvious-looking simplification is
