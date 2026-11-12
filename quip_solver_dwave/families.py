@@ -93,13 +93,13 @@ class BoundInstance:
 
 
 def descriptor_digest(descriptor: miner_pb2.FamilyDescriptor) -> bytes:
-    """The FAM-18 descriptor digest, computed by the wheel (QUI-2267).
+    """The FAM-18 descriptor digest, computed by the wheel (FAM-68).
 
     Raises:
         AdmissionError: The descriptor fails codes 3 to 9.
     """
     return bytes(
-        wheel.descriptor_digest(  # pyright: ignore[reportAttributeAccessIssue] - QUI-2267
+        wheel.descriptor_digest(
             descriptor.family_id,
             descriptor.revision,
             bytes(descriptor.params),

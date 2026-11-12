@@ -268,7 +268,7 @@ that a Rust solver prints (`capabilities_json_from` in `session.rs`).
 
 - **Checks.** `families.bind` runs the FAM-65 order through the wheel. A
   bound job in the `topology_hash` form is code 15. The descriptor digest
-  comes from `families.descriptor_digest` in the wheel (QUI-2267). The
+  comes from `families.descriptor_digest` in the wheel (FAM-68). The
   checks follow, in this order:
   - `families.descriptor_digest`, codes 7 to 9
   - `families.validate_instance`, codes 13, 15, and 16

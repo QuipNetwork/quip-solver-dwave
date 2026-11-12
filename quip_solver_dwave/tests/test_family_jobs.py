@@ -49,23 +49,6 @@ def instance(params: bytes = P_ADJ, nonce: bytes = NONCE):
     return wheel.generate(TWISTED, 1, params, wheel.params_digest(params), nodes, edges, nonce)
 
 
-@pytest.fixture(autouse=True)
-def descriptor_digest(monkeypatch):
-    """The wheel function QUI-2267 adds, until the pinned wheel has it.
-
-    It runs the wheel's own ``admit`` (codes 3 to 9), then reads the digest
-    off a generated instance with the same descriptor.
-    """
-    if hasattr(wheel, "descriptor_digest"):
-        return
-
-    def digest(family_id: str, revision: int, params: bytes, params_digest: bytes) -> bytes:
-        wheel.admit(family_id, revision, params, params_digest)
-        return bytes(instance(params).descriptor_digest)
-
-    monkeypatch.setattr(wheel, "descriptor_digest", digest, raising=False)
-
-
 def binding(inst=None, **kw: Any) -> miner_pb2.FamilyBinding:
     inst = inst or instance()
     params = kw.pop("params", P_ADJ)
