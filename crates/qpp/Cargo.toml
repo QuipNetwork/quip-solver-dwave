@@ -1,0 +1,18 @@
+[package]
+name = "quip-dwave-qpp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "QPU-aware postprocessor for the twisted-ice dimer cells of quip-solver-dwave"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[[bin]]
+name = "quip-dwave-qpp"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+codegen-units = 1
+lto = true

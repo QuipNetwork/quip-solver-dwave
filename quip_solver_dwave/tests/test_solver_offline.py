@@ -82,8 +82,10 @@ def _job(job_id: bytes, generation: int) -> miner_pb2.CoordMsg:
             generation=generation,
             deadline_ms=int(time.time() * 1000) + 3_600_000,
             ising=miner_pb2.IsingProblem(
-                h_milli_le32=wire.encode_i32_le([1000, -1000]),
-                j_milli_le32=wire.encode_i32_le([500]),
+                encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+                scale=1000,
+                h=wire.encode_i32_le([1000, -1000]),
+                j=wire.encode_i32_le([500]),
                 edges=miner_pb2.EdgeList(u=[0], v=[1]),
                 num_reads=1,
             ),
@@ -165,7 +167,7 @@ def test_an_offline_solver_rejects_the_job_without_a_refund(monkeypatch, usage_d
     boundary_at: List[int] = []
 
     def script(sent):
-        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=1))
+        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=2))
         yield _configure(usage_db)
         yield _cancel(1)  # the boundary the gate joins on: credits go out here
         yield _topology()
@@ -188,7 +190,7 @@ def test_an_offline_solver_rejects_the_job_without_a_refund(monkeypatch, usage_d
 
 def test_an_offline_solver_bills_the_ledger_nothing(monkeypatch, usage_db):
     def script(sent):
-        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=1))
+        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=2))
         yield _configure(usage_db)
         yield _cancel(1)
         yield _topology()
@@ -246,7 +248,7 @@ def test_a_solver_down_at_configure_is_probed_once_per_qblock(
     marks: List[int] = []
 
     def script(sent):
-        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=1))
+        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=2))
         yield _configure(usage_db)  # connect attempt 1 fails
         _wait_for(sent, "ready", 1)
         yield _topology()
@@ -272,7 +274,7 @@ def test_an_unbudgeted_miner_gets_its_credits_when_the_solver_returns(
     sampler = DownAtConnectSampler(SolverOfflineError("Solver is offline."), down_for=1)
 
     def script(sent):
-        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=1))
+        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=2))
         # No budget: an unmetered miner is granted credits at Configure, so
         # the grant is what has to be withheld here.
         yield miner_pb2.CoordMsg(
@@ -293,7 +295,7 @@ def test_a_round_sat_out_for_the_solver_is_recorded_as_such(monkeypatch, usage_d
     sampler = DownAtConnectSampler(SolverOfflineError("Solver is offline."), down_for=2)
 
     def script(sent):
-        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=1))
+        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=2))
         yield _configure(usage_db)
         _wait_for(sent, "ready", 1)
         yield _cancel(1)
@@ -317,7 +319,7 @@ def test_any_other_connect_error_is_still_fatal(monkeypatch, usage_db):
     sampler = DownAtConnectSampler(RuntimeError("bad token"), down_for=99)
 
     def script(sent):
-        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=1))
+        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=2))
         yield _configure(usage_db)
         time.sleep(0.2)
         yield miner_pb2.CoordMsg(shutdown=miner_pb2.Shutdown(grace_ms=100))
@@ -334,7 +336,7 @@ def test_the_parked_credit_is_the_probe_that_finds_the_solver_back(
     monkeypatch, usage_db
 ):
     def script(sent):
-        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=1))
+        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=2))
         yield _configure(usage_db)
         yield _cancel(1)
         yield _topology()

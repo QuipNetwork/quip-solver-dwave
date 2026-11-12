@@ -42,8 +42,28 @@ conformance:
     - python3 -m venv /opt/venv
     - /opt/venv/bin/pip install -q -e ".[dev]"
   script:
-    - cargo install --locked quip-solver-conformance --version 0.0.1-rc2
+    - cargo install --locked quip-solver-conformance --version 0.0.12-rc1
     - QUIP_SOLVER_DRIVE="$CARGO_HOME/bin/quip-solver-drive" /opt/venv/bin/pytest quip_solver_dwave/tests/test_conformance.py -v
+    # The family postprocess against the real quip-dwave-qpp; the main test
+    # job runs the same file with a fake processor and skips this one case.
+    - cargo build --manifest-path crates/qpp/Cargo.toml --locked --release
+    - QUIP_DWAVE_QPP="$PWD/crates/qpp/target/release/quip-dwave-qpp" /opt/venv/bin/pytest quip_solver_dwave/tests/test_family_postprocess.py -v
+
+# The QPU-aware postprocessor in crates/qpp. clippy and the Rust tests,
+# including the golden vectors of the C++ prototype it ports, then the
+# Python round trip through the release binary. quip_solver_dwave.qpp needs
+# only numpy, so apt packages cover it.
+qpp:
+  stage: test
+  image: rust:1.97.1
+  before_script:
+    - apt-get update -qq && apt-get install -y --no-install-recommends python3 python3-numpy python3-pytest
+    - rustup component add clippy
+  script:
+    - cargo clippy --manifest-path crates/qpp/Cargo.toml --locked --all-targets -- -D warnings
+    - cargo test --manifest-path crates/qpp/Cargo.toml --locked
+    - cargo build --manifest-path crates/qpp/Cargo.toml --locked --release
+    - QUIP_DWAVE_QPP="$PWD/crates/qpp/target/release/quip-dwave-qpp" python3 -m pytest -p no:cacheprovider quip_solver_dwave/tests/test_qpp.py -v
 
 build-wheel:
   stage: build

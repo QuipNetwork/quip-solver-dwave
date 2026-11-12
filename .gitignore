@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 dist/
 build/
+# Cargo output of crates/qpp
+target/
 # PyInstaller scratch (see pyinstaller/quip-dwave-qa.spec)
 .pyi-build/
 *.egg-info/

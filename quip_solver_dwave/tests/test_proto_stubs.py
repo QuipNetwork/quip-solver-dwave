@@ -102,3 +102,24 @@ def test_the_session_rpc_is_still_the_one_the_miner_calls():
     assert hasattr(miner_pb2_grpc.MinerServiceStub, "__init__")
     stub = miner_pb2_grpc.MinerServiceStub.__init__
     assert callable(stub)
+
+
+WARM_START_FIELDS = (
+    "initial_spins",
+    "start_beta_milli",
+    "reversal_s_milli",
+    "reversal_pause_us",
+)
+
+
+def test_the_runtime_carries_the_warm_start_fields():
+    names = {f.name for f in miner_pb2.IsingProblem.DESCRIPTOR.fields}
+    assert set(WARM_START_FIELDS) <= names
+
+
+def test_the_stub_declares_the_warm_start_fields():
+    # A stale stub types `ising.initial_spins` as an error in Pyright while the
+    # runtime accepts it, so the message-name checks above do not catch it.
+    source = _stub_source()
+    for name in WARM_START_FIELDS:
+        assert re.search(rf"^\s+{name}: ", source, re.M), f"stub lacks {name}"

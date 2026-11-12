@@ -130,6 +130,94 @@ The same config holds other `[dwave]` keys: `budget`, `budget_reset_day`,
 `usage_db`, `num_reads`, and `anneal_time_us`. This README does not document
 them yet.
 
+## Anneal schedule and warm starts
+
+The miner states every anneal as an `anneal_schedule`. It never sends
+`annealing_time`, because SAPI refuses a problem that carries both. A forward
+anneal of `T` microseconds is `[[0, 0], [T, 1]]`. `T` is `anneal_time_us`, or
+the solver's `default_annealing_time` when `anneal_time_us` is 0.
+
+A job that carries `IsingProblem.initial_spins` runs as a reverse anneal from
+its first state. The miner lists the `initial-spins` feature for that reason.
+`anneal_time_us` sets the slope of both ramps, so a ramp to the reversal point
+`s` takes `(1 - s) * anneal_time_us`. Two `[dwave]` keys set the defaults for a
+job that leaves fields 11 and 12 at 0:
+
+```toml
+reversal_s_milli = 500   # reversal point s, 1 to 999, in milli-units
+reversal_pause_us = 25   # hold at s, in microseconds
+```
+
+The built-in defaults are 500 and 25, which is D-Wave's documented example.
+`scripts/ab_anneal_schedule.py` checks on the live QPU that the schedule form
+costs and performs the same as the old form.
+
+## Measurement harness (QUI-1387 steps 5 to 7)
+
+Six scripts measure the hybrid pipeline against the recorded QPU attempts of a
+node. No production code path of the miner imports them. They need the
+`quip_msa` wheel from quip-miner-cpu. Keep the data outside the repository, in
+one directory such as `~/quip-data/qui-1387/`. That directory holds the
+topology spec, `attempts.csv`, and every output.
+
+Run them in this order:
+
+1. `scripts/fetch_attempts.py` reads the attempts logs of a node over ssh and
+   writes `attempts.csv`.
+2. `scripts/lite_dataset.py` rebuilds each model from its nonce and records the
+   MSA-lite energy and the rate at each sweep count.
+3. `scripts/lite_report.py` prints recall and false positives for each sweep
+   count and pass share, then writes `low-energy.nonces` and
+   `false-positive.nonces`.
+4. `scripts/heavy_replay.py` runs MSA at high sweeps on both lists through
+   `quip-coordinator drive` and quip-miner-cuda, then compares the two sets.
+5. `scripts/capture_qpu_reads.py` submits sampled models to the QPU and keeps
+   every read.
+6. `scripts/seeded_sweep.py` starts the MSA kernel from those reads at a range
+   of start betas, and compares each run with a cold run.
+
+Only `capture_qpu_reads.py` spends QPU time. It prints the estimate with
+`--dry-run`, refuses to submit without `--yes`, and stops at
+`--max-qpu-seconds`.
+
+## Regime search (round 1)
+
+Four scripts compare the QPU with the classical kernels on five problem
+regimes. The scripts call a regime a cell: `native-pm1`, `native-125`,
+`diamond-pm1`, `cubic-dimer-pm1`, and `clique-portfolio`. No production code
+path of the miner imports them. They need the `quip_msa` wheel from
+quip-miner-cpu. Keep the data outside the repository, under
+`~/quip-data/regimes/`.
+
+Run them in this order:
+
+1. `scripts/embed_probe.py` places the two lattices on the working graph and
+   finds the largest clique embedding that the graph holds. That clique sets
+   the asset count of `clique-portfolio`. The script spends no QPU time. With
+   `--solver-properties` it also reads the coupling ranges of the solver.
+2. `scripts/regime_capture.py` submits the models of one cell to the QPU and
+   keeps every read. Run one cell for each process.
+3. `scripts/regime_ladder.py` runs the classical kernel on the same models at
+   each rung of a sweep ladder. After a capture it also runs the extra rung
+   for each unmatched model, and the seed arm.
+4. `scripts/regime_report.py` writes one table for each metric. It stops
+   when a cell lacks a capture or a run of the ladder.
+
+Only `regime_capture.py` spends QPU time. It prints the estimate with
+`--dry-run` and refuses to submit without `--yes`. It keeps a spend journal
+for the round in `spend.jsonl`, and it counts the spend of every cell against
+`--max-qpu-seconds` before each job. It stops before any spend when the live
+chip lacks a qubit or a coupler of the cell. With `--mock` it runs the same
+path on an offline sampler and spends nothing.
+
+Each cell has a `manifest.json` that records what defines its data. A run
+with another topology order, embedding, read count, anneal time, or sampler
+kind stops. The ladder also checks its rungs, seed sweeps, and thread count.
+Only one capture process can hold a round at a time. A saved answer with
+the wrong read count stops both capture resume and the report. The report
+requires a complete control cell and states which solver range checks lack
+data.
+
 ## History and the profile report
 
 The miner keeps three tables in the usage database, beside the budget

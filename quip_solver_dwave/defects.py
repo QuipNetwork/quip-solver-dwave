@@ -46,6 +46,7 @@ def clamp_fixed_variables(
     nonce_seed: Union[int, bytes],
     defective_qubits: Sequence[int],
     defective_edges: "set[Tuple[int, int]]",
+    start_state: Optional[Dict[int, int]] = None,
 ) -> Tuple[
     Dict[int, float],
     Dict[Tuple[int, int], float],
@@ -53,15 +54,32 @@ def clamp_fixed_variables(
     float,
     Dict[Tuple[int, int], float],
 ]:
-    """Clamp defective qubits; return reduced h/J + reconstruction metadata."""
+    """Clamp defective qubits; return reduced h/J + reconstruction metadata.
+
+    A missing qubit takes its spin from ``start_state`` when the job is a warm
+    start, and from the nonce-seeded draw otherwise. The reduced problem folds
+    each clamped spin into its neighbours' biases, so clamping to anything but
+    the start state's own spin would hand the QPU a start state that disagrees
+    with the problem it is asked to refine.
+    """
     defective_set = set(defective_qubits)
+    fixed_spins: Dict[int, int] = {}
     if isinstance(nonce_seed, (bytes, bytearray)):
         nonce_seed = int.from_bytes(nonce_seed, "big")
     rng = np.random.default_rng(nonce_seed)
-
-    fixed_spins: Dict[int, int] = {}
-    for qubit in defective_qubits:
-        fixed_spins[qubit] = int(2 * rng.integers(2) - 1)
+    if start_state is not None:
+        for qubit in defective_qubits:
+            spin = start_state.get(qubit)
+            if spin is None:
+                # This defect sits outside the job's own graph, so the warm
+                # start carries no spin for it: clamp it exactly as the cold
+                # (seedless) path would.
+                fixed_spins[qubit] = int(2 * rng.integers(2) - 1)
+            else:
+                fixed_spins[qubit] = 1 if spin >= 0 else -1
+    else:
+        for qubit in defective_qubits:
+            fixed_spins[qubit] = int(2 * rng.integers(2) - 1)
 
     h_reduced = {k: v for k, v in h.items() if k not in defective_set}
     for (u, v), j_val in j.items():
@@ -102,6 +120,7 @@ def prepare_problem(
     defective_qubits: Sequence[int] = (),
     defective_edges: Optional[set] = None,
     nonce_seed: Union[int, bytes, None] = None,
+    start_state: Optional[Dict[int, int]] = None,
 ) -> Tuple[Dict[int, float], Dict[Tuple[int, int], float], Optional[DefectInfo]]:
     """Apply defect clamping when the live graph is missing qubits or couplers.
 
@@ -110,17 +129,25 @@ def prepare_problem(
     coupler the QPU does not have makes SAPI reject the whole problem with
     ``ProblemStructureError``, which is what a seedless early return used to
     cause on a chip whose qubits all match but whose couplers do not.
+
+    ``start_state`` (qubit label to spin) replaces the seed for a warm start:
+    the clamped spins are read from it, so no seed is needed.
     """
     de = defective_edges or set()
     if not (defective_qubits or de):
         return h, j, None
-    if defective_qubits and nonce_seed is None:
+    if defective_qubits and nonce_seed is None and start_state is None:
         raise ValueError(
             "clamping defective qubits needs a nonce seed; "
             f"{len(defective_qubits)} qubits are missing from the live graph"
         )
     h_r, j_r, fixed, offset, removed = clamp_fixed_variables(
-        h, j, nonce_seed if nonce_seed is not None else 0, defective_qubits, de
+        h,
+        j,
+        nonce_seed if nonce_seed is not None else 0,
+        defective_qubits,
+        de,
+        start_state=start_state,
     )
     return h_r, j_r, DefectInfo(fixed, offset, removed)
 

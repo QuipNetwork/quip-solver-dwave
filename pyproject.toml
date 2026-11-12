@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quip-solver-dwave"
-version = "0.3.5"
+version = "0.3.6rc1"
 description = "D-Wave (Ocean) QPU Ising miner for the quip.network v0.3 protocol"
 readme = "README.md"
 # Floor set by quip_solver_core, which requires >=3.11. Declaring 3.10 here
@@ -22,12 +22,12 @@ license = { text = "AGPL-3.0-or-later" }
 # not for a stable release. Move the pin deliberately, together with a version
 # bump.
 dependencies = [
-    "quip-solver-core==0.0.1rc2",
+    "quip-solver-core==0.0.12rc1",
     "dwave-ocean-sdk>=9.0.0,<10",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "hypothesis"]
+dev = ["pytest", "pytest-asyncio", "hypothesis", "matplotlib>=3.9,<4"]
 
 # Console entry point matches the code's prog name and the coordinator's
 # default binary for the dwave backend.
@@ -45,3 +45,9 @@ include = ["quip_solver_dwave*"]
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
+extraPaths = ["scripts"]
+
+[tool.uv]
+# quip-solver-core comes from our own release pipeline, so the global
+# exclude-newer window does not apply to it.
+exclude-newer-package = { quip-solver-core = false }

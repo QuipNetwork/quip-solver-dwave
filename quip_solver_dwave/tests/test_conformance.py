@@ -56,7 +56,12 @@ exec "{sys.executable}" -m quip_solver_dwave --mock "$@"
     return wrapper
 
 
-def test_conformance_against_quip_solver_drive():
+def _drive(mode: list[str], *, backend: str, timeout: int) -> str:
+    """Run quip-solver-drive in ``mode`` against the mock miner; return its report.
+
+    The driver prints a per-case report and exits 0 iff the composite verdict
+    passes.
+    """
     drive = _drive_bin()
     with tempfile.TemporaryDirectory(prefix="quip-dwave-conf-") as td:
         tdp = Path(td)
@@ -64,17 +69,31 @@ def test_conformance_against_quip_solver_drive():
         env = os.environ.copy()
         env["QUIP_SESSION_TOKEN"] = "test-token"
         env["QUIP_DWAVE_MOCK"] = "1"
+        env["QUIP_DWAVE_MOCK_BACKEND"] = backend
         sock = tdp / "conf.sock"
-        # quip-solver-drive prints the per-axis report and exits 0 iff the
-        # composite verdict passes.
         proc = subprocess.run(
-            [str(drive), str(miner), f"unix://{sock}"],
+            [str(drive), *mode, str(miner), f"unix://{sock}"],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=timeout,
             env=env,
         )
         out = (proc.stdout or "") + (proc.stderr or "")
         assert proc.returncode == 0 and "[FAIL]" not in out, (
             f"quip-solver-drive returned {proc.returncode}\n{out}"
         )
+        return out
+
+
+def test_conformance_against_quip_solver_drive():
+    out = _drive([], backend="exact", timeout=120)
+    # The miner lists ISING_GENERATE, so the salt-lease walk must have run.
+    assert "[pass] salt lease" in out
+
+
+def test_family_gate_against_quip_solver_drive():
+    # The --family gate drives every advertised generated revision through
+    # FAM-47 admission, a full lease, a stale lease and an expired one. Its
+    # instances have 80 nodes, past the exact mock, so the SA mock answers.
+    out = _drive(["--family"], backend="sa", timeout=120)
+    assert "[pass] supported-revision quip/twisted-ice-dimer@1" in out

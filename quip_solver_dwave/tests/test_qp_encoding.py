@@ -274,3 +274,20 @@ def test_an_edge_naming_a_missing_qubit_is_rejected():
 
     with pytest.raises(ValueError, match="not on the solver"):
         enc.plan(np.array([0, 2]), np.array([(0, 1)]))
+
+
+def test_the_plan_cache_keys_on_the_graph_not_its_size():
+    # Two lease salts can carry different graphs with the same node and edge
+    # counts. A size key handed the second one the first one's coupler slots.
+    from quip_solver_dwave.ocean import OceanSampler
+
+    solver = _Solver(range(4), [(0, 1), (0, 2), (1, 2), (2, 3)])
+    sampler = OceanSampler(mock=True)
+    nodes = np.arange(4, dtype=np.int64)
+    first = np.array([[0, 1], [2, 3]], dtype=np.int64)
+    second = np.array([[0, 2], [1, 2]], dtype=np.int64)
+    _, plan_a = sampler._graph_plan(solver, nodes, first)
+    _, plan_b = sampler._graph_plan(solver, nodes, second)
+    assert plan_b.quad_slots.tolist() != plan_a.quad_slots.tolist()
+    _, again = sampler._graph_plan(solver, nodes, second.copy())
+    assert again is plan_b

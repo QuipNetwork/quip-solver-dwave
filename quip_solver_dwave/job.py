@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -13,6 +13,8 @@ from quip_solver_core.session import DEFAULT_NUM_SWEEPS
 from quip_solver_dwave import MAX_EDGES, MAX_NODES
 from quip_solver_dwave.config import SamplingDefaults
 from quip_solver_dwave.ocean import SampleResult, SupportsSample, is_solver_offline
+from quip_solver_dwave.schedule import ScheduleError
+from quip_solver_dwave.warm import MalformedWarmStart, WarmStart, warm_start_from_ising
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +23,85 @@ def now_unix_ms() -> int:
     return int(time.time() * 1000)
 
 
-def decode_milli_f64(raw: bytes) -> List[float]:
-    """Decode little-endian i32 milli array to floats. Raises ValueError if bad."""
-    return [v / 1000.0 for v in wire.decode_i32_le(raw)]
+class CoefficientsInvalid(ValueError):
+    """``IsingProblem.h``/``.j`` do not decode to whole i32 milli values."""
+
+
+# Little-endian element types per encoding. Integer elements are
+# ``stored / scale`` units and need a nonzero scale; float elements are units
+# and need scale 0. The rules are quip-solver-core's ``encoding.rs``.
+_INTEGER_DTYPES = {
+    miner_pb2.COEFFICIENT_ENCODING_I32: np.dtype("<i4"),
+    miner_pb2.COEFFICIENT_ENCODING_I16: np.dtype("<i2"),
+    miner_pb2.COEFFICIENT_ENCODING_I8: np.dtype("i1"),
+}
+_FLOAT_DTYPES = {
+    miner_pb2.COEFFICIENT_ENCODING_F16: np.dtype("<f2"),
+    miner_pb2.COEFFICIENT_ENCODING_F32: np.dtype("<f4"),
+    miner_pb2.COEFFICIENT_ENCODING_F64: np.dtype("<f8"),
+}
+# Advertised in Capabilities.encodings: every form the decoder accepts, the
+# canonical I32 milli form first.
+ENCODINGS = (*_INTEGER_DTYPES, *_FLOAT_DTYPES)
+
+_I32_MIN = -(2**31)
+_I32_MAX = 2**31 - 1
+
+
+def _elements(raw: bytes, dtype: np.dtype) -> np.ndarray:
+    if len(raw) % dtype.itemsize:
+        raise CoefficientsInvalid(f"{len(raw)} bytes is not a whole number of {dtype}")
+    return np.frombuffer(raw, dtype=dtype)
+
+
+def _integer_milli(raw: bytes, dtype: np.dtype, scale: int) -> np.ndarray:
+    product = _elements(raw, dtype).astype(np.int64) * 1000
+    if np.any(product % scale):
+        raise CoefficientsInvalid(f"a value at scale {scale} is not a whole milli")
+    return product // scale
+
+
+def _float_milli(raw: bytes, dtype: np.dtype) -> np.ndarray:
+    # The multiply can land off the integer (536870.91 * 1000 is
+    # 536870910.00000006), so round, then accept only when dividing back
+    # recovers the stored value exactly. Sub-milli inputs such as 0.0005 fail.
+    value = _elements(raw, dtype).astype(np.float64)
+    with np.errstate(invalid="ignore", over="ignore"):
+        milli = np.round(value * 1000.0)
+        exact = np.isfinite(milli) & (milli / 1000.0 == value)
+    if not np.all(exact):
+        raise CoefficientsInvalid("a float value is not finite or not a whole milli")
+    return milli.astype(np.int64)
+
+
+def decode_coefficients_milli(
+    ising: miner_pb2.IsingProblem,
+) -> Tuple[List[int], List[int]]:
+    """Decode ``h`` and ``j`` to whole milli values, as the coordinator scores them.
+
+    Raises:
+        CoefficientsInvalid: Unspecified or unknown encoding, a scale that does
+            not match the encoding, a partial element, a non-finite float, or a
+            value that is not a whole milli in ``i32`` range.
+    """
+    encoding = ising.encoding
+    scale = int(ising.scale)
+    if encoding in _INTEGER_DTYPES:
+        if scale == 0:
+            raise CoefficientsInvalid("an integer encoding needs a nonzero scale")
+        dtype = _INTEGER_DTYPES[encoding]
+        h, j = (_integer_milli(raw, dtype, scale) for raw in (ising.h, ising.j))
+    elif encoding in _FLOAT_DTYPES:
+        if scale != 0:
+            raise CoefficientsInvalid("a float encoding needs scale 0")
+        dtype = _FLOAT_DTYPES[encoding]
+        h, j = (_float_milli(raw, dtype) for raw in (ising.h, ising.j))
+    else:
+        raise CoefficientsInvalid(f"unsupported coefficient encoding {encoding}")
+    for values in (h, j):
+        if values.size and (values.min() < _I32_MIN or values.max() > _I32_MAX):
+            raise CoefficientsInvalid("a value is outside the i32 milli range")
+    return h.tolist(), j.tolist()
 
 
 def edges_of(ising: miner_pb2.IsingProblem) -> List[Tuple[int, int]]:
@@ -52,7 +130,18 @@ def resolve_graph(
 
 
 def spins_to_bytes(spins: Sequence[int]) -> bytes:
-    return wire.encode_spins(list(spins))
+    return wire.encode_spins_packed(list(spins))
+
+
+def pack_spin_rows(rows: np.ndarray) -> List[bytes]:
+    """Pack each ±1 row into ``Solution.spins`` form in one vectorised call.
+
+    Node i is bit ``i % 8`` of byte ``i // 8``, LSB first, 1 = +1, with zero
+    padding bits: ``wire.encode_spins_packed`` per row, without building a
+    Python list per read (test_spin_encoding pins the equivalence).
+    """
+    packed = np.packbits(rows > 0, axis=1, bitorder="little")
+    return [row.tobytes() for row in packed]
 
 
 def sample_dict_to_vector(
@@ -136,15 +225,13 @@ def _validate_job(
 
     ising = job.ising if job.HasField("ising") else miner_pb2.IsingProblem()
 
-    # MALFORMED: h or j length not a multiple of 4
     try:
-        h = decode_milli_f64(ising.h_milli_le32)
-    except ValueError:
+        h_milli, j_milli = decode_coefficients_milli(ising)
+    except CoefficientsInvalid as err:
+        logger.warning("job %s: %s; rejecting MALFORMED", job.job_id.hex(), err)
         raise _Rejected(miner_pb2.MALFORMED) from None
-    try:
-        j_vals = decode_milli_f64(ising.j_milli_le32) if ising.j_milli_le32 else []
-    except ValueError:
-        raise _Rejected(miner_pb2.MALFORMED) from None
+    h = [v / 1000.0 for v in h_milli]
+    j_vals = [v / 1000.0 for v in j_milli]
 
     # TOO_LARGE: the job exceeds the capability envelope this backend
     # advertises in Hello, Capabilities, and --capabilities. Sampling past it
@@ -176,7 +263,7 @@ def _resolve_problem(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Resolve the job's graph and build the sampler's ``h``/``J`` mappings.
 
-    ``h_milli_le32`` and ``j_milli_le32`` are dense positional arrays over the
+    ``IsingProblem.h`` and ``.j`` are dense positional arrays over the
     resolved graph, so a length mismatch is a malformed job rather than
     something to trim to fit. Truncating would drop values the coordinator
     specified (or leave trailing nodes and edges untouched) and then report a
@@ -227,7 +314,27 @@ def _resolve_problem(
     )
 
 
-def _sampling_params(
+def _resolve_warm_start(
+    ising: miner_pb2.IsingProblem,
+    num_nodes: int,
+    session_defaults: SamplingDefaults,
+    *,
+    job_id: bytes,
+) -> Optional[WarmStart]:
+    """The job's warm start, or ``None`` for a cold job.
+
+    Raises:
+        _Rejected: ``MALFORMED`` for a state of the wrong length, a set padding
+            bit, or a reversal point of 1000 milli or more (SPEC section 3).
+    """
+    try:
+        return warm_start_from_ising(ising, num_nodes, session_defaults)
+    except MalformedWarmStart as exc:
+        logger.warning("job %s: %s; rejecting MALFORMED", job_id.hex(), exc)
+        raise _Rejected(miner_pb2.MALFORMED) from None
+
+
+def sampling_params(
     ising: miner_pb2.IsingProblem,
     session_target: Optional["miner_pb2.SetTarget"],
     session_sweeps: int,
@@ -240,7 +347,7 @@ def _sampling_params(
     then the hard-coded default. Zero means "unset" at every rung, so an
     operator's ``anneal_time_us`` applies to jobs the coordinator left blank
     without ever overriding one it filled in. ``anneal_time_us`` resolving to 0
-    means the QPU applies its hardware-default anneal. ``num_sweeps`` does not steer
+    means the solver's published default anneal. ``num_sweeps`` does not steer
     the QPU (an annealer runs anneals, not sweeps); it is the resolved budget
     the coordinator pinned, echoed in ``SamplerMeta.sweeps`` because the
     contract grades that echo verbatim (``sweeps_honoured``).
@@ -275,6 +382,41 @@ def _sampling_params(
     return num_reads, anneal_time_us, num_sweeps
 
 
+def ordered_spins(
+    nodes: "np.ndarray | Sequence[int]", result: SampleResult
+) -> np.ndarray:
+    """The reads as ``(reads, len(nodes))`` int8 rows in ``nodes`` order.
+
+    One vectorised reorder from the sampler's column order. With no ``nodes``
+    the columns come back sorted by label.
+    """
+    order = nodes if len(nodes) else sorted(result.variables)
+    col_of = {v: i for i, v in enumerate(result.variables)}
+    spins = result.spins
+    n_cols = spins.shape[1]
+    # A node the sampler never reported reads as +1, matching the dict path's
+    # `sample.get(n, 1)`. Point those at one appended constant column so the
+    # reorder stays a single fancy-index.
+    idx = np.fromiter(
+        (col_of.get(int(n), n_cols) for n in order), dtype=np.intp, count=len(order)
+    )
+    if idx.size and idx.max() == n_cols:
+        spins = np.hstack([spins, np.ones((spins.shape[0], 1), dtype=np.int8)])
+    return spins[:, idx] if idx.size else spins[:, :0]
+
+
+def sampler_meta(result: SampleResult, num_sweeps: int) -> miner_pb2.SamplerMeta:
+    """``SamplerMeta`` of one sample: reads, the sweeps echo, and access time."""
+    return miner_pb2.SamplerMeta(
+        reads=result.num_reads,
+        # The resolved budget echo, not work performed: see sampling_params.
+        sweeps=num_sweeps,
+        device_access_time_us=result.device_access_time_us,
+        qpu_access_us=result.device_access_time_us,
+        extra=result.extra,
+    )
+
+
 def _build_result(
     job_id: bytes,
     nodes: "np.ndarray | Sequence[int]",
@@ -288,46 +430,24 @@ def _build_result(
     energy regardless, so it re-scores whatever it accepts. ``energy_milli`` is
     an integer field, so the only transform is quantizing to milli.
     """
-    # One vectorised reorder from the sampler's column order into session node
-    # order, then a raw copy per read. The wire format is one signed byte per
-    # spin, which is exactly an int8 row, so nothing has to be packed by hand
-    # (test_spin_encoding pins that equivalence against wire.encode_spins).
-    order = nodes if len(nodes) else sorted(result.variables)
-    col_of = {v: i for i, v in enumerate(result.variables)}
-    spins = result.spins
-    n_cols = spins.shape[1]
-    # A node the sampler never reported reads as +1, matching the dict path's
-    # `sample.get(n, 1)`. Point those at one appended constant column so the
-    # reorder stays a single fancy-index.
-    idx = np.fromiter(
-        (col_of.get(int(n), n_cols) for n in order), dtype=np.intp, count=len(order)
-    )
-    if idx.size and idx.max() == n_cols:
-        spins = np.hstack([spins, np.ones((spins.shape[0], 1), dtype=np.int8)])
-    ordered = spins[:, idx] if idx.size else spins[:, :0]
+    # One vectorised reorder into session node order, then one vectorised bit
+    # pack for every read.
+    ordered = ordered_spins(nodes, result)
 
     solutions = [
         miner_pb2.Solution(
-            spins_bytes=row.tobytes(),
+            spins=packed,
             energy_milli=int(round(qpu_e * 1000)),
         )
-        for row, qpu_e in zip(ordered, result.energies)
+        for packed, qpu_e in zip(pack_spin_rows(ordered), result.energies)
     ]
 
-    meta = miner_pb2.SamplerMeta(
-        reads=result.num_reads,
-        # The resolved budget echo, not work performed: see _sampling_params.
-        sweeps=num_sweeps,
-        device_access_time_us=result.device_access_time_us,
-        qpu_access_us=result.device_access_time_us,
-        extra=result.extra,
-    )
     return [
         miner_pb2.MinerMsg(
             result=miner_pb2.Result(
                 job_id=job_id,
                 solutions=solutions,
-                meta=meta,
+                meta=sampler_meta(result, num_sweeps),
             )
         ),
         miner_pb2.MinerMsg(job_request=miner_pb2.JobRequest(credits=1)),
@@ -367,12 +487,18 @@ def handle_job(
             session_edges,
             job_id=job_id,
         )
+        warm_start = _resolve_warm_start(
+            ising, len(nodes), session_defaults, job_id=job_id
+        )
     except _Rejected as exc:
         return _reject(job_id, exc.reason)
 
-    num_reads, anneal_time_us, num_sweeps = _sampling_params(
+    num_reads, anneal_time_us, num_sweeps = sampling_params(
         ising, session_target, session_sweeps, session_defaults
     )
+    # Passed only when the job carries one, so a sampler double written before
+    # warm starts existed still serves every cold job.
+    warm_kwargs: Dict[str, Any] = {} if warm_start is None else {"warm_start": warm_start}
     try:
         result: SampleResult = sampler.sample(
             nodes,
@@ -380,7 +506,7 @@ def handle_job(
             edges,
             j_arr,
             num_reads=num_reads,
-            # 0 leaves annealing_time unset so the QPU default applies.
+            # 0 means the solver's own default anneal.
             anneal_time_us=anneal_time_us or None,
             # Use job_id bytes as the defect-clamp seed when present.
             nonce_seed=bytes(job_id) if job_id else None,
@@ -389,7 +515,13 @@ def handle_job(
             # session loop cancels by job id, so the seed cannot double as it:
             # a job with no defects is given no seed at all.
             cancel_key=bytes(job_id) if job_id else None,
+            **warm_kwargs,
         )
+    except ScheduleError as exc:
+        # The job asked for an anneal this chip cannot run. Resending it
+        # changes nothing, so it is not the transient OVERLOADED below.
+        logger.warning("job %s: %s; rejecting MALFORMED", job_id.hex(), exc)
+        return _reject(job_id, miner_pb2.MALFORMED)
     except Exception as exc:
         if is_solver_offline(exc):
             raise SolverUnavailable(job_id) from exc

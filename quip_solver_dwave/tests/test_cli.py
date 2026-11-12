@@ -1,5 +1,6 @@
 """CLI surface tests."""
 
+import json
 import signal
 
 import pytest
@@ -16,19 +17,52 @@ def test_version(capsys):
     assert main(["--version"]) == EXIT_CLEAN
     out = capsys.readouterr().out
     assert "quip-dwave-qa" in out
-    assert "protocol 1" in out
+    assert "protocol 2" in out
 
 
 def test_capabilities(capsys):
+    # The same JSON object, key for key, that a Rust solver built on
+    # quip-solver-core 0.0.11 prints (session.rs capabilities_json_from): the
+    # identity enums as their stable lowercase names, the enum lists as proto
+    # names, and the unset optional fields and the empty family lists omitted.
     assert main(["--capabilities"]) == EXIT_CLEAN
     out = capsys.readouterr().out
-    assert "dwave-qpu" in out
-    assert "quantum-anneal" in out
-    # SPEC section 8: protobuf JSON field names (lowerCamelCase), including
-    # the fields the pre-0.0.0 hand-written output omitted.
-    assert "maxNodes" in out
-    assert "streamWidth" in out
-    assert "protocolVersion" in out
+    assert json.loads(out) == {
+        "supportedKinds": ["ISING_SAMPLE", "ISING_GENERATE"],
+        "maxNodes": 10_000,
+        "maxEdges": 100_000,
+        "features": ["quantum-anneal", "native-topology", "initial-spins"],
+        "protocolVersion": 2,
+        "streamWidth": 1,
+        "encodings": [
+            "COEFFICIENT_ENCODING_I32",
+            "COEFFICIENT_ENCODING_I16",
+            "COEFFICIENT_ENCODING_I8",
+            "COEFFICIENT_ENCODING_F16",
+            "COEFFICIENT_ENCODING_F32",
+            "COEFFICIENT_ENCODING_F64",
+        ],
+        "generators": [
+            "GENERATOR_ALGORITHM_BLAKE3_CHACHA8_V1",
+            "GENERATOR_ALGORITHM_FAMILY_CHACHA8_V1",
+        ],
+        "backend": "dwave-qpu",
+        "algorithm": "quantum-anneal",
+        "solverId": "quip-solver-dwave",
+        "generatedFamilies": [{"familyId": "quip/twisted-ice-dimer", "revisions": [1]}],
+    }
+    # One compact line, as serde_json writes it.
+    assert out.count("\n") == 1 and ": " not in out
+
+
+def test_capabilities_json_carries_the_hash_as_standard_base64():
+    from quip_solver_dwave.session_loop import capabilities_json, capabilities_message
+
+    # 0xfb 0xff exercises both characters where standard and URL-safe base64
+    # differ ('+' and '/').
+    view = json.loads(capabilities_json(capabilities_message(b"\xfb\xff" * 16)))
+    assert view["nativeTopologyHash"] == "+//7//v/" * 5 + "+/8="
+    assert list(view)[6] == "nativeTopologyHash"  # between streamWidth and encodings
 
 
 def test_missing_coordinator():
