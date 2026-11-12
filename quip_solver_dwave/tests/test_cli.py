@@ -50,6 +50,7 @@ def test_capabilities(capsys):
         "algorithm": "quantum-anneal",
         "solverId": "quip-solver-dwave",
         "generatedFamilies": [{"familyId": "quip/twisted-ice-dimer", "revisions": [1]}],
+        "acceptedFamilies": [{"familyId": "quip/twisted-ice-dimer", "revisions": [1]}],
     }
     # One compact line, as serde_json writes it.
     assert out.count("\n") == 1 and ": " not in out

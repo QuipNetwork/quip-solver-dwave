@@ -49,6 +49,7 @@ from quip_solver_dwave.config import (
     queue_depth_from_toml,
     sampling_defaults_from_toml,
 )
+from quip_solver_dwave.families import accepted_family_support
 from quip_solver_dwave.history import HistoryRecorder, JobSample
 from quip_solver_dwave.job import (
     ENCODINGS,
@@ -684,6 +685,7 @@ def capabilities_message(
         encodings=list(ENCODINGS),
         generators=generators(),
         generated_families=generated_family_support(),
+        accepted_families=accepted_family_support(),
     )
     if native_topology_hash:
         caps.native_topology_hash = native_topology_hash
@@ -861,6 +863,38 @@ def run_session(
         # replies. Shared-state mutations are guarded by state_lock.
         nonlocal jobs_done, best_energy_milli, parked_credits
         started = time.monotonic()
+        processor = postprocessor
+        explicit_postprocess: Optional[Callable[..., Any]] = None
+        if processor is not None:
+
+            def stopped() -> bool:
+                return leases_aborted.is_set() or _is_abandoned(
+                    job.generation, cancel_watermark
+                )
+
+            def postprocess_job(bound, spins):
+                # An explicit family job holds its credit until this returns:
+                # the Result, with the final state, goes out after it.
+                if processor.policy_for(bound.family_id) is None:
+                    return None
+                trial = processor.run(
+                    job_id=bytes(job.job_id),
+                    salt_index=None,
+                    family_id=bound.family_id,
+                    nonce=bound.nonce,
+                    nodes=bound.node_ids,
+                    positions=bound.positions,
+                    h_milli=bound.h_milli,
+                    j_milli=bound.j_milli,
+                    metadata=bound.metadata,
+                    raw_spins=spins,
+                    raw_energies=bound.energies_milli(spins),
+                    stop=stopped,
+                )
+                return trial.final_spins if trial.outcome == TRIAL_OK else None
+
+            explicit_postprocess = postprocess_job
+
         try:
             replies = handle_job(
                 job,
@@ -871,6 +905,7 @@ def run_session(
                 session_target=s_target,
                 session_sweeps=s_sweeps,
                 session_defaults=s_defaults,
+                postprocess=explicit_postprocess,
             )
         except SolverUnavailable as exc:
             # The reject goes out without its refund: the credit is parked

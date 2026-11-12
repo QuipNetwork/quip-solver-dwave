@@ -260,6 +260,29 @@ jobs with `TOPOLOGY_MISMATCH`.
 `--capabilities` prints `session_loop.capabilities_json`, the same JSON object
 that a Rust solver prints (`capabilities_json_from` in `session.rs`).
 
+### Explicit family jobs
+
+`families.py` makes the miner an accepted-family solver for the revisions in
+`ACCEPTED_FAMILIES`, which `Capabilities.accepted_families` lists. A job whose
+`IsingProblem.family` names another pair is a plain job (FAM-69).
+
+- **Checks.** `families.bind` runs the FAM-65 order through the wheel. A
+  bound job in the `topology_hash` form is code 15. The descriptor digest
+  comes from `families.descriptor_digest` in the wheel (FAM-68). The
+  checks follow, in this order:
+  - `families.descriptor_digest`, codes 7 to 9
+  - `families.validate_instance`, codes 13, 15, and 16
+- **Reject reasons.** Code 13 is `TOO_LARGE`. Every other code is `MALFORMED`.
+- **Native qubits.** A bound job samples on the qubits that
+  `FamilyBinding.node_ids` names, in the instance output order. Before it
+  samples, `OceanSampler.unplaceable` counts each qubit and coupler that is
+  not on the live graph and is not clamped as a defect. If either count is not
+  zero, the session rejects the job with `TOPOLOGY_MISMATCH`. The miner does not embed or
+  truncate an instance.
+- **Energies.** The miner rescores each read exactly. It reports the energy
+  of the plain model, without the offset (FAM-64). A configured postprocess
+  puts its final state first.
+
 ### Salt leases (`ISING_GENERATE`)
 
 `leases.py` admits a lease and builds the problem of each salt. The session

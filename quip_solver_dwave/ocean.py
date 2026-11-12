@@ -350,6 +350,8 @@ class OceanSampler:
         self._defective_edges: set = set(defective_edges or set())
         self._live_nodes: List[int] = []
         self._live_edges: List[Tuple[int, int]] = []
+        # Sets of the live graph for unplaceable(), rebuilt when it changes.
+        self._live_sets: Optional[Tuple[Tuple[int, int], frozenset, frozenset]] = None
         self._native_hash: Optional[bytes] = None
         self._is_mock = False
         self._qpu_solver = None
@@ -448,6 +450,37 @@ class OceanSampler:
     @property
     def live_edges(self) -> List[Tuple[int, int]]:
         return list(self._live_edges)
+
+    def unplaceable(self, nodes: Sequence[int], edges: "np.ndarray") -> Tuple[int, int]:
+        """``(qubits, couplers)`` of a job graph that this solver cannot anneal.
+
+        A part counts when it is neither on the live graph nor clamped as a
+        defect of the session topology (``set_session_topology``). Before the
+        live graph is known the answer is ``(0, 0)``: no native graph, no
+        claim, as SPEC "Generated jobs" puts it.
+        """
+        if not self._live_nodes:
+            return 0, 0
+        key = (id(self._live_nodes), id(self._live_edges))
+        if self._live_sets is None or self._live_sets[0] != key:
+            self._live_sets = (
+                key,
+                frozenset(self._live_nodes),
+                frozenset((min(u, v), max(u, v)) for u, v in self._live_edges),
+            )
+        _, live_nodes, live_edges = self._live_sets
+        clamped = set(self._defective_qubits)
+        defective_edges = {(min(u, v), max(u, v)) for u, v in self._defective_edges}
+        missing_nodes = sum(
+            1 for n in nodes if int(n) not in live_nodes and int(n) not in clamped
+        )
+        missing_edges = 0
+        for u, v in np.asarray(edges, dtype=np.int64).reshape(-1, 2).tolist():
+            pair = (min(u, v), max(u, v))
+            if pair in live_edges or pair in defective_edges or u in clamped or v in clamped:
+                continue
+            missing_edges += 1
+        return missing_nodes, missing_edges
 
     def set_session_topology(
         self,

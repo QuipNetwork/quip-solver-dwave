@@ -193,7 +193,8 @@ class Trial:
     """One postprocess of one salt's reads, as the record keeps it."""
 
     job_id: bytes
-    salt_index: int
+    #: The lease salt, or ``None`` for an explicit family job.
+    salt_index: Optional[int]
     family_id: str
     policy: str
     processor: str
@@ -211,6 +212,8 @@ class Trial:
 
     @property
     def stem(self) -> str:
+        if self.salt_index is None:
+            return self.job_id.hex()
         return f"{self.job_id.hex()}.{self.salt_index}"
 
     def summary(self) -> Dict[str, Any]:
@@ -307,7 +310,7 @@ class Postprocessor:
         self,
         *,
         job_id: bytes,
-        salt_index: int,
+        salt_index: Optional[int],
         family_id: str,
         nonce: bytes,
         nodes: np.ndarray,
@@ -364,7 +367,7 @@ class Postprocessor:
         except (qpp.QppError, ValueError, OSError) as exc:
             trial.outcome, trial.error = FAILED, f"{type(exc).__name__}: {exc}"
             logger.warning(
-                "postprocess %s salt %d (%s): %s", job_id.hex()[:16], salt_index, policy.name, trial.error
+                "postprocess %s (%s): %s", trial.stem[:24], policy.name, trial.error
             )
         else:
             trial.outcome = OK

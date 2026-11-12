@@ -4,8 +4,9 @@ The miner can postprocess the QPU reads of a family salt before it reports them.
 The postprocess runs on the host, after the salt's QPU call, and adds its final states to the salt's `Result`.
 Every raw read stays in that `Result` and in a trial record on disk.
 
-This page covers family leases.
-Explicit family jobs use the same path after DW-1 (QUI-2042).
+The same path serves family leases and explicit family jobs (DW-1, QUI-2042).
+An explicit job reports the energy of the plain model, without the offset of the instance (FAM-64).
+Its trial record holds the same energies.
 
 ## Configuration
 
@@ -40,7 +41,8 @@ The miner never replaces a configured postprocess with raw reads alone.
 `qpp-race768/1` is the read race of the study in `~/quip-data/regimes/qpu-aware-pp-20261111/`.
 The race polishes every raw read with a greedy descent and keeps the 4 lowest.
 It runs each of the 4 for 64 cluster sweeps, then runs the lowest for 512 sweeps, 768 sweeps in all.
-In Run B of that study, on 30 models of `ice-twisted-w62-dimer1200`, the race finished 0.5 to 2.1 units below an Otsuka continuation of the best raw read.
+Run B of that study used 30 models of `ice-twisted-w62-dimer1200`.
+There the race ended 0.5 to 2.1 units below an Otsuka run that started from the best raw read.
 
 The processor model holds couplings only.
 An instance with a field is outside the model, and its trial fails.
@@ -55,7 +57,8 @@ The miner generates no other family yet.
 
 ## The trial record
 
-Each postprocessed salt has a file `<records>/<job id hex>.<salt index>.npz` and a line in `<records>/trials.jsonl`.
+Each postprocessed lease salt has a file `<records>/<job id hex>.<salt index>.npz`, and each explicit job has a file `<records>/<job id hex>.npz`.
+Each trial also adds a line to `<records>/trials.jsonl`.
 
 | Field | Content |
 |---|---|
@@ -86,9 +89,10 @@ A salt that a `Cancel` closes during its postprocess is still billed for its QPU
 
 ## Concurrency and stops
 
-A salt frees its QPU slot as soon as its sampler call returns.
+A lease salt frees its QPU slot as soon as its sampler call returns.
 The postprocess then runs on its own executor, `threads` at a time.
 The job pool stays free for QPU submissions.
+An explicit job keeps its credit until its postprocess ends, because its one `Result` carries the final state.
 
 The miner checks for a stop every 20 ms while the processor runs, and ends the processor when a stop comes.
 A stop is one of these events:
