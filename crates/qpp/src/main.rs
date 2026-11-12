@@ -3,8 +3,10 @@
 //!
 //! A Rust port of the 2026-11-11 C++ prototype
 //! (`quip-data/regimes/qpu-aware-pp-20261111/src/qpp.cpp`). The command line,
-//! the files, the JSON on stdout, and the states are the prototype's, and the
-//! same seed gives the same result bit for bit.
+//! the files, the JSON on stdout, and the states are the prototype's. The
+//! cluster lists use the true union-find root, a one-line fix to the
+//! prototype; with that fix applied to the C++, the same seed gives the same
+//! result bit for bit.
 //!
 //! ```text
 //! quip-dwave-qpp model.bin states.bin out.bin MODE key=value...

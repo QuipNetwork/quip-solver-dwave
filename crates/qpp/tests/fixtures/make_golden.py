@@ -2,10 +2,13 @@
 
     python3 crates/qpp/tests/fixtures/make_golden.py PATH/TO/qpp
 
-The prototype is ``quip-data/regimes/qpu-aware-pp-20261111/qpp`` (built from
-``src/qpp.cpp`` with GCC 12). The model is synthetic: 24 four-spin tiles with
-ice-like couplings, a ring of dimer pairs, and weak random edges, so the
-fixture stays small and needs no research data.
+The reference is the prototype ``quip-data/regimes/qpu-aware-pp-20261111/src/qpp.cpp``
+with its one root-lookup fix (line 145, ``int r = parent[i];`` becomes
+``int r = find(i);``), built with ``g++ -O3 -march=native`` (GCC 12). At 192
+tiles the fix changes the ``chain`` and ``race_sibling`` cases, so the
+vectors fail a port that keeps the old lookup. The model is synthetic: corner-sharing four-spin tiles
+with ice-like couplings, dimer pairs, and weak random edges, so the fixture
+stays small and needs no research data.
 
 Each line of golden.tsv is ``name, args, stdout, best state hex`` separated by
 tabs. The processor-time fields of stdout read ``C`` (see ``mask_clock``), the
@@ -32,26 +35,35 @@ CASES = {
 }
 
 
-def model_bytes() -> bytes:
+def model_bytes(tiles: int = 192) -> bytes:
+    """Corner-sharing tiles: every spin sits in two tiles, as in the ice cells.
+
+    Shared spins let the tile links grow clusters across many tiles, which is
+    what builds the deep union-find trees the root lookup must handle.
+    """
     rng = np.random.default_rng(20261112)
-    tiles = 24
-    n = 4 * tiles
-    tile = np.arange(n).reshape(tiles, 4)
-    rows, gauge = [], np.ones((tiles, 4), dtype=np.int8)
-    for t, nodes in enumerate(tile):
-        signs = rng.choice([-1, 1], 4)
-        signs[0] = 1
-        gauge[t] = signs
+    n = 2 * tiles
+    while True:
+        slots = rng.permutation(np.repeat(np.arange(n), 2)).reshape(tiles, 4)
+        if all(len(set(row)) == 4 for row in slots.tolist()):
+            break
+    gauge = rng.choice(np.array([-1, 1], dtype=np.int8), (tiles, 4))
+    gauge[:, 0] = 1
+    j = {}
+    for t, nodes in enumerate(slots.tolist()):
         for a in range(4):
             for b in range(a + 1, 4):
-                rows.append((nodes[a], nodes[b], 1000 * signs[a] * signs[b]))
-    pairs = [(tile[k, 3], tile[(k + 1) % tiles, 1]) for k in range(tiles)]
-    rows += [(u, v, -1000) for u, v in pairs]
-    for _ in range(2 * n):
-        u, v = rng.choice(n, 2, replace=False)
-        rows.append((u, v, int(rng.choice([-250, 250]))))
+                j.setdefault((min(nodes[a], nodes[b]), max(nodes[a], nodes[b])), 1000 * int(gauge[t, a] * gauge[t, b]))
+    spins = rng.permutation(n)
+    pairs = [(int(spins[2 * k]), int(spins[2 * k + 1])) for k in range(n // 4)]
+    for u, v in pairs:
+        j[(min(u, v), max(u, v))] = -1000
+    for _ in range(n):
+        u, v = sorted(int(x) for x in rng.choice(n, 2, replace=False))
+        j.setdefault((u, v), int(rng.choice([-250, 250])))
+    rows = [(u, v, w) for (u, v), w in j.items()]
     out = np.array([n, tiles, len(pairs), len(rows)], dtype="<i4").tobytes()
-    out += np.array(rows, dtype="<i4").tobytes() + tile.astype("<i4").tobytes()
+    out += np.array(rows, dtype="<i4").tobytes() + slots.astype("<i4").tobytes()
     return out + gauge.tobytes() + np.array(pairs, dtype="<i4").tobytes()
 
 

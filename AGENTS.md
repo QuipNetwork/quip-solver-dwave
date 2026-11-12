@@ -382,21 +382,27 @@ energy does not match the report raises `QppError`. The processor reads the tile
 it lives here and not in quip-miner-cpu.
 
 The binary is a port of the C++ prototype of the 2026-11-11 study
-(`~/quip-data/regimes/qpu-aware-pp-20261111/src/qpp.cpp`). For the same
-inputs and seed it gives the same stdout and state, bit for bit, apart from
-the processor seconds. `tests/fixtures/golden.tsv` holds vectors from the
-prototype, and `tests/fixtures/make_golden.py` writes them again. Three
-details of the C++ program decide that parity, and a change to any of them
-moves the trajectory:
+(`~/quip-data/regimes/qpu-aware-pp-20261111/src/qpp.cpp`) with one fix. The
+prototype's `cluster_sweep` filed each spin under `parent[i]`, which after
+the path-halving finds is not always the root, so one cluster could split
+into more than one flip list. The port files each spin under `find(i)`.
+
+The fix changes 538 of 660 trajectories on the 30 models of each cell. The
+mean best energy of every arm moves by less than 0.25 units, against a
+standard deviation near 1. The measured results do not change.
+
+For the same inputs and seed the binary gives the same stdout and state, bit
+for bit, apart from the processor seconds, as the prototype with that fix.
+`tests/fixtures/golden.tsv` holds vectors from that fixed prototype, and
+`tests/fixtures/make_golden.py` writes them again. The unfixed prototype
+fails two of the cases. Three details of the C++ program decide the parity,
+and a change to any of them moves the trajectory:
 
 - GCC fused `w0 + 4 * w1` into one FMA, so `single_ice` uses `mul_add`.
 - GCC evaluates the two `rng.below` arguments of a `join` call from right
   to left, so the `neg` index takes the first draw.
 - The race sorts its population with the unstable `std::sort`, so
   `cxxsort.rs` ports the libstdc++ introsort to keep the same tied states.
-
-`cluster_sweep` reads `parent[i]` after the path-halving finds, which is not
-always the root of `i`. The port keeps that read for parity.
 
 Build with `cargo build --manifest-path crates/qpp/Cargo.toml --release`.
 `qpp.find_binary` looks at `$QUIP_DWAVE_QPP`, then `PATH`, then that build.

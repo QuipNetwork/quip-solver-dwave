@@ -1,7 +1,8 @@
 """QPU-aware postprocess for the twisted-ice dimer cells.
 
 The numeric work runs in ``quip-dwave-qpp``, the Rust binary in ``crates/qpp``
-(a bit-for-bit port of the 2026-11-11 research prototype). This module writes
+(a bit-for-bit port of the 2026-11-11 research prototype, with
+its cluster root lookup fixed). This module writes
 its input files, runs it, and rescores the returned state on the host, so a
 result never reaches a caller with an energy the host did not confirm.
 

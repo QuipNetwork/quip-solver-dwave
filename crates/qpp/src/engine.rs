@@ -211,12 +211,12 @@ impl<'m> Engine<'m> {
             let r = self.find(i);
             self.head[r as usize] = -1;
         }
-        // `parent[i]` after the path-halving finds above, exactly as the
-        // prototype reads it: not always the root of `i` when its tree is
-        // deeper than two levels. Kept for bit parity with the measured runs.
         for idx in 0..self.spins.len() {
             let i = self.spins[idx] as usize;
-            let r = self.parent[i];
+            // The root, not `parent[i]`: after the path-halving finds above,
+            // `parent[i]` can still be an inner node of a deep tree, which
+            // would split one cluster into several flip lists.
+            let r = self.find(i as i32);
             if r == pinned {
                 self.lab[i] = n as i32;
                 continue;
