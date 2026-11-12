@@ -18,7 +18,13 @@ pub fn sort<T: Copy>(v: &mut [T], less: impl Fn(&T, &T) -> bool) {
     final_insertion_sort(v, 0, n, &less);
 }
 
-fn introsort_loop<T: Copy>(v: &mut [T], first: usize, mut last: usize, mut depth: usize, less: &impl Fn(&T, &T) -> bool) {
+fn introsort_loop<T: Copy>(
+    v: &mut [T],
+    first: usize,
+    mut last: usize,
+    mut depth: usize,
+    less: &impl Fn(&T, &T) -> bool,
+) {
     while last - first > THRESHOLD {
         if depth == 0 {
             heap_sort(v, first, last, less);
@@ -31,7 +37,14 @@ fn introsort_loop<T: Copy>(v: &mut [T], first: usize, mut last: usize, mut depth
     }
 }
 
-fn move_median_to_first<T: Copy>(v: &mut [T], result: usize, a: usize, b: usize, c: usize, less: &impl Fn(&T, &T) -> bool) {
+fn move_median_to_first<T: Copy>(
+    v: &mut [T],
+    result: usize,
+    a: usize,
+    b: usize,
+    c: usize,
+    less: &impl Fn(&T, &T) -> bool,
+) {
     if less(&v[a], &v[b]) {
         if less(&v[b], &v[c]) {
             v.swap(result, b);
@@ -49,7 +62,13 @@ fn move_median_to_first<T: Copy>(v: &mut [T], result: usize, a: usize, b: usize,
     }
 }
 
-fn unguarded_partition<T: Copy>(v: &mut [T], mut first: usize, mut last: usize, pivot: usize, less: &impl Fn(&T, &T) -> bool) -> usize {
+fn unguarded_partition<T: Copy>(
+    v: &mut [T],
+    mut first: usize,
+    mut last: usize,
+    pivot: usize,
+    less: &impl Fn(&T, &T) -> bool,
+) -> usize {
     loop {
         while less(&v[first], &v[pivot]) {
             first += 1;
@@ -66,7 +85,12 @@ fn unguarded_partition<T: Copy>(v: &mut [T], mut first: usize, mut last: usize, 
     }
 }
 
-fn unguarded_partition_pivot<T: Copy>(v: &mut [T], first: usize, last: usize, less: &impl Fn(&T, &T) -> bool) -> usize {
+fn unguarded_partition_pivot<T: Copy>(
+    v: &mut [T],
+    first: usize,
+    last: usize,
+    less: &impl Fn(&T, &T) -> bool,
+) -> usize {
     let mid = first + (last - first) / 2;
     move_median_to_first(v, first, first + 1, mid, last - 1, less);
     unguarded_partition(v, first + 1, last, first, less)
@@ -96,7 +120,12 @@ fn insertion_sort<T: Copy>(v: &mut [T], first: usize, last: usize, less: &impl F
     }
 }
 
-fn final_insertion_sort<T: Copy>(v: &mut [T], first: usize, last: usize, less: &impl Fn(&T, &T) -> bool) {
+fn final_insertion_sort<T: Copy>(
+    v: &mut [T],
+    first: usize,
+    last: usize,
+    less: &impl Fn(&T, &T) -> bool,
+) {
     if last - first > THRESHOLD {
         insertion_sort(v, first, first + THRESHOLD, less);
         for i in first + THRESHOLD..last {
@@ -109,7 +138,14 @@ fn final_insertion_sort<T: Copy>(v: &mut [T], first: usize, last: usize, less: &
 
 // `std::__partial_sort(first, last, last)`: make_heap, then sort_heap.
 
-fn push_heap<T: Copy>(v: &mut [T], first: usize, mut hole: usize, top: usize, val: T, less: &impl Fn(&T, &T) -> bool) {
+fn push_heap<T: Copy>(
+    v: &mut [T],
+    first: usize,
+    mut hole: usize,
+    top: usize,
+    val: T,
+    less: &impl Fn(&T, &T) -> bool,
+) {
     let mut parent = hole.wrapping_sub(1) / 2;
     while hole > top && less(&v[first + parent], &val) {
         v[first + hole] = v[first + parent];
@@ -119,7 +155,14 @@ fn push_heap<T: Copy>(v: &mut [T], first: usize, mut hole: usize, top: usize, va
     v[first + hole] = val;
 }
 
-fn adjust_heap<T: Copy>(v: &mut [T], first: usize, mut hole: usize, len: usize, val: T, less: &impl Fn(&T, &T) -> bool) {
+fn adjust_heap<T: Copy>(
+    v: &mut [T],
+    first: usize,
+    mut hole: usize,
+    len: usize,
+    val: T,
+    less: &impl Fn(&T, &T) -> bool,
+) {
     let top = hole;
     let mut second = hole;
     while second < (len - 1) / 2 {

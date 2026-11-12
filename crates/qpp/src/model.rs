@@ -61,7 +61,10 @@ impl Csr {
     #[inline]
     pub fn row(&self, u: usize) -> impl Iterator<Item = (usize, i32)> + '_ {
         let r = self.range(u);
-        self.nbr[r.clone()].iter().zip(&self.jv[r]).map(|(&v, &j)| (v as usize, j))
+        self.nbr[r.clone()]
+            .iter()
+            .zip(&self.jv[r])
+            .map(|(&v, &j)| (v as usize, j))
     }
 }
 
@@ -103,7 +106,12 @@ impl Reader<'_> {
 
     fn i32s(&mut self, count: usize, what: &str) -> Result<Vec<i32>, FormatError> {
         let raw = self.take(count * 4, what)?;
-        Ok(raw.as_chunks::<4>().0.iter().map(|&c| i32::from_le_bytes(c)).collect())
+        Ok(raw
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&c| i32::from_le_bytes(c))
+            .collect())
     }
 }
 
@@ -114,13 +122,26 @@ impl Model {
         let count = |v: i32, what: &str| {
             usize::try_from(v).map_err(|_| FormatError(format!("negative {what} count {v}")))
         };
-        let (n, t, p, e) = (count(h[0], "spin")?, count(h[1], "tile")?, count(h[2], "pair")?, count(h[3], "edge")?);
+        let (n, t, p, e) = (
+            count(h[0], "spin")?,
+            count(h[1], "tile")?,
+            count(h[2], "pair")?,
+            count(h[3], "edge")?,
+        );
         let edges = r.i32s(3 * e, "the edges")?;
         let tile = r.i32s(4 * t, "the tiles")?;
-        let gauge: Vec<i8> = r.take(4 * t, "the gauge")?.iter().map(|&b| b as i8).collect();
+        let gauge: Vec<i8> = r
+            .take(4 * t, "the gauge")?
+            .iter()
+            .map(|&b| b as i8)
+            .collect();
         let pairs = r.i32s(2 * p, "the pairs")?;
         let in_range = |v: i32| usize::try_from(v).is_ok_and(|v| v < n);
-        if !edges.as_chunks::<3>().0.iter().all(|c| in_range(c[0]) && in_range(c[1]))
+        if !edges
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .all(|c| in_range(c[0]) && in_range(c[1]))
             || !tile.iter().all(|&v| in_range(v))
             || !pairs.iter().all(|&v| in_range(v))
         {
@@ -165,7 +186,10 @@ impl Model {
         }
         let (mut a, mut b, mut w) = (Vec::new(), Vec::new(), Vec::new());
         for k in 0..self.eu.len() {
-            let j = strong.get(&key(self.eu[k], self.ev[k])).copied().unwrap_or(self.ej[k]);
+            let j = strong
+                .get(&key(self.eu[k], self.ev[k]))
+                .copied()
+                .unwrap_or(self.ej[k]);
             if j != 0 {
                 a.push(self.eu[k]);
                 b.push(self.ev[k]);
@@ -179,7 +203,9 @@ impl Model {
     pub fn energy(&self, s: &[i8]) -> i64 {
         (0..self.eu.len())
             .map(|k| {
-                i64::from(self.ej[k]) * i64::from(s[self.eu[k] as usize]) * i64::from(s[self.ev[k] as usize])
+                i64::from(self.ej[k])
+                    * i64::from(s[self.eu[k] as usize])
+                    * i64::from(s[self.ev[k] as usize])
             })
             .sum()
     }

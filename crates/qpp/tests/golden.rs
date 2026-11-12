@@ -25,7 +25,9 @@ fn mask_clock(stdout: &str) -> String {
         });
     }
     let (before_cpu, cpu) = rest.rsplit_once("\"cpu\":").expect("a cpu field");
-    let tail = cpu.trim_end().trim_start_matches(|c: char| c.is_ascii_digit() || c == '.');
+    let tail = cpu
+        .trim_end()
+        .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.');
     out.push_str(before_cpu);
     out.push_str("\"cpu\":C");
     out.push_str(tail);
@@ -40,13 +42,21 @@ fn every_case_matches_the_prototype() {
     std::fs::create_dir_all(&tmp).expect("a scratch directory");
     let mut cases = 0;
     for line in golden.lines() {
-        let [name, args, want_stdout, want_state]: [&str; 4] =
-            line.split('\t').collect::<Vec<_>>().try_into().expect("four tab-separated fields");
+        let [name, args, want_stdout, want_state]: [&str; 4] = line
+            .split('\t')
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("four tab-separated fields");
         let out = tmp.join(format!("{name}.out"));
         let mut words = args.split(' ');
         let mode = words.next().expect("a mode");
         let options: Vec<String> = words
-            .map(|w| w.replace("MASK", fixtures.join("mask.bin").to_str().expect("a UTF-8 path")))
+            .map(|w| {
+                w.replace(
+                    "MASK",
+                    fixtures.join("mask.bin").to_str().expect("a UTF-8 path"),
+                )
+            })
             .collect();
         let run = Command::new(env!("CARGO_BIN_EXE_quip-dwave-qpp"))
             .arg(fixtures.join("model.bin"))
@@ -56,10 +66,18 @@ fn every_case_matches_the_prototype() {
             .args(&options)
             .output()
             .expect("the binary runs");
-        assert!(run.status.success(), "{name}: {}", String::from_utf8_lossy(&run.stderr));
+        assert!(
+            run.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
         let stdout = String::from_utf8(run.stdout).expect("UTF-8 stdout");
         assert_eq!(mask_clock(&stdout), want_stdout, "{name}: stdout");
-        let state: String = std::fs::read(&out).expect("the best state").iter().map(|b| format!("{b:02x}")).collect();
+        let state: String = std::fs::read(&out)
+            .expect("the best state")
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         assert_eq!(state, want_state, "{name}: best state");
         cases += 1;
     }

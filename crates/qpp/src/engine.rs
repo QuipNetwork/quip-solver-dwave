@@ -99,7 +99,11 @@ impl<'m> Engine<'m> {
 
     #[inline]
     fn node(&self, u: i32) -> i32 {
-        if self.free[u as usize] { u } else { self.m.n as i32 }
+        if self.free[u as usize] {
+            u
+        } else {
+            self.m.n as i32
+        }
     }
 
     #[inline]
@@ -296,7 +300,8 @@ impl<'m> Engine<'m> {
                     continue;
                 }
                 let (su, sv) = (i64::from(st.s[u]), i64::from(st.s[v]));
-                let d = -2 * su * i64::from(st.f[u]) - 2 * sv * i64::from(st.f[v]) + 4 * -1000 * su * sv;
+                let d = -2 * su * i64::from(st.f[u]) - 2 * sv * i64::from(st.f[v])
+                    + 4 * -1000 * su * sv;
                 if d < 0 {
                     st.flip(m, u);
                     st.flip(m, v);

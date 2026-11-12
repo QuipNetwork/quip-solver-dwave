@@ -53,7 +53,11 @@ mod tests {
         let first: Vec<u64> = (0..3).map(|_| rng.next_u64()).collect();
         assert_eq!(
             first,
-            [0x5317_5d61_490b_23df, 0x61da_6f3d_c380_d507, 0x5c0f_df91_ec9a_7bfc]
+            [
+                0x5317_5d61_490b_23df,
+                0x61da_6f3d_c380_d507,
+                0x5c0f_df91_ec9a_7bfc
+            ]
         );
     }
 

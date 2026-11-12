@@ -2094,7 +2094,7 @@ wheels = [
 
 [[package]]
 name = "quip-solver-dwave"
-version = "0.3.5"
+version = "0.3.6rc1"
 source = { editable = "." }
 dependencies = [
     { name = "dwave-ocean-sdk" },

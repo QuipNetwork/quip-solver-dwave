@@ -44,7 +44,10 @@ fn cpu_now() -> f64 {
     unsafe extern "C" {
         fn clock_gettime(clock: i32, out: *mut Timespec) -> i32;
     }
-    let mut t = Timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut t = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // SAFETY: `t` is a valid, writable timespec of the 64-bit Linux layout,
     // and the clock id is a constant every Linux kernel supports.
     let rc = unsafe { clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &raw mut t) };
@@ -75,7 +78,10 @@ fn c_atof(s: &str) -> f64 {
         .take_while(|&(_, c)| c.is_ascii_digit() || matches!(c, '+' | '-' | '.' | 'e' | 'E'))
         .last()
         .map_or(0, |(i, c)| i + c.len_utf8());
-    (1..=end).rev().find_map(|k| t[..k].parse::<f64>().ok()).unwrap_or(0.0)
+    (1..=end)
+        .rev()
+        .find_map(|k| t[..k].parse::<f64>().ok())
+        .unwrap_or(0.0)
 }
 
 struct Args(HashMap<String, String>);
@@ -105,7 +111,11 @@ impl Args {
 
 /// Geometric beta from `b0` to `b1` over `s` sweeps, at sweep `k`.
 fn beta_at(b0: f64, b1: f64, k: i64, s: i64) -> f64 {
-    b0 * (b1 / b0).powf(if s > 1 { k as f64 / (s - 1) as f64 } else { 1.0 })
+    b0 * (b1 / b0).powf(if s > 1 {
+        k as f64 / (s - 1) as f64
+    } else {
+        1.0
+    })
 }
 
 fn lowest(states: &[State]) -> &State {
@@ -132,7 +142,13 @@ struct Run<'a> {
 impl Run<'_> {
     fn checkpoint(&mut self, work: i64) {
         let sep = if self.first { "" } else { "," };
-        let _ = write!(self.out, "{sep}[{work},{:.6},{},{}]", cpu_now() - self.t0, self.best_e, self.x.e);
+        let _ = write!(
+            self.out,
+            "{sep}[{work},{:.6},{},{}]",
+            cpu_now() - self.t0,
+            self.best_e,
+            self.x.e
+        );
         self.first = false;
     }
     fn note(&mut self, st: &State) {
@@ -155,9 +171,12 @@ fn read_file(path: &str) -> Result<Vec<u8>, Failure> {
 fn run(argv: &[String], stdout: &mut String) -> Result<Vec<i8>, Failure> {
     let args = Args::parse(&argv[5..]);
     let mode = argv[4].as_str();
-    let tw = i32::try_from(args.i("tw", 250)).map_err(|_| Failure::Input("tw out of range".into()))?;
-    let dw = i32::try_from(args.i("dw", 250)).map_err(|_| Failure::Input("dw out of range".into()))?;
-    let m = Model::parse(&read_file(&argv[1])?, tw, dw).map_err(|e| Failure::Input(format!("{}: {e}", argv[1])))?;
+    let tw =
+        i32::try_from(args.i("tw", 250)).map_err(|_| Failure::Input("tw out of range".into()))?;
+    let dw =
+        i32::try_from(args.i("dw", 250)).map_err(|_| Failure::Input("dw out of range".into()))?;
+    let m = Model::parse(&read_file(&argv[1])?, tw, dw)
+        .map_err(|e| Failure::Input(format!("{}: {e}", argv[1])))?;
     let seeds: Vec<i8> = read_file(&argv[2])?.into_iter().map(|b| b as i8).collect();
     let n = m.n;
     let k_states = seeds.len().checked_div(n).unwrap_or(0);
@@ -166,7 +185,9 @@ fn run(argv: &[String], stdout: &mut String) -> Result<Vec<i8>, Failure> {
     let seed = args.i("seed", 1) as u64;
     let (b0, b1) = (args.f("b0", 4.0), args.f("b1", 20.0));
     if idx >= k_states {
-        return Err(Failure::Input(format!("seed_index {idx} is not below the {k_states} seed states")));
+        return Err(Failure::Input(format!(
+            "seed_index {idx} is not below the {k_states} seed states"
+        )));
     }
     let x = State::new(&m, state_at(idx));
     let mut eng = Engine::new(&m, seed);
@@ -175,15 +196,32 @@ fn run(argv: &[String], stdout: &mut String) -> Result<Vec<i8>, Failure> {
     if eng.single_every < 1 {
         return Err(Failure::Input("single_every must be at least 1".into()));
     }
-    let mut r = Run { out: String::new(), first: true, t0: cpu_now(), best: x.s.clone(), best_e: x.e, x, m: &m };
-    let _ = write!(r.out, "{{\"mode\":\"{mode}\",\"start\":{},\"trace\":[", r.x.e);
+    let mut r = Run {
+        out: String::new(),
+        first: true,
+        t0: cpu_now(),
+        best: x.s.clone(),
+        best_e: x.e,
+        x,
+        m: &m,
+    };
+    let _ = write!(
+        r.out,
+        "{{\"mode\":\"{mode}\",\"start\":{},\"trace\":[",
+        r.x.e
+    );
     let result = run_mode(&args, mode, &mut r, &mut eng, &seeds, k_states, b0, b1);
     stdout.push_str(&r.out);
     result?;
     if m.energy(&r.best) != r.best_e {
         return Err(Failure::Defect("energy bookkeeping mismatch".into()));
     }
-    let _ = writeln!(stdout, "],\"best\":{},\"cpu\":{:.6}}}", r.best_e, cpu_now() - r.t0);
+    let _ = writeln!(
+        stdout,
+        "],\"best\":{},\"cpu\":{:.6}}}",
+        r.best_e,
+        cpu_now() - r.t0
+    );
     Ok(r.best)
 }
 
@@ -212,14 +250,19 @@ fn run_mode(
         let raw = read_file(path)?;
         let scale = args.f("link_scale", 1.0);
         for q in raw.as_chunks::<16>().0 {
-            let w = |i: usize| i32::from_le_bytes([q[4 * i], q[4 * i + 1], q[4 * i + 2], q[4 * i + 3]]);
+            let w =
+                |i: usize| i32::from_le_bytes([q[4 * i], q[4 * i + 1], q[4 * i + 2], q[4 * i + 3]]);
             if !(0..2).all(|i| usize::try_from(w(i)).is_ok_and(|v| v < n)) {
-                return Err(Failure::Input(format!("{path}: a link spin is outside 0..n")));
+                return Err(Failure::Input(format!(
+                    "{path}: a link spin is outside 0..n"
+                )));
             }
             eng.links.u.push(w(0));
             eng.links.v.push(w(1));
             eng.links.sign.push(w(2));
-            eng.links.p.push(f64::min(1.0, scale * f64::from(w(3)) / 1000.0));
+            eng.links
+                .p
+                .push(f64::min(1.0, scale * f64::from(w(3)) / 1000.0));
         }
         eng.links_on = true;
     }
@@ -254,7 +297,11 @@ fn run_mode(
             r.checkpoint(s);
         }
         "ratchet" => {
-            let (rounds, children, s) = (args.i("rounds", 8), args.i("children", 8), args.i("sweeps", 64));
+            let (rounds, children, s) = (
+                args.i("rounds", 8),
+                args.i("children", 8),
+                args.i("sweeps", 64),
+            );
             let split = args.i("split", 1) != 0;
             let global = args.i("global", 0) != 0;
             let mut mg = Merger::new(m);
@@ -341,7 +388,9 @@ fn population(
     let first_i = usize::try_from(args.i("pop_first", 2)).unwrap_or(usize::MAX);
     let count = usize::try_from(args.i("pop_count", 48)).unwrap_or(usize::MAX);
     if count == 0 || first_i.saturating_add(count) > k_states {
-        return Err(Failure::Input("the population is not inside the seed states".into()));
+        return Err(Failure::Input(
+            "the population is not inside the seed states".into(),
+        ));
     }
     let mut pop: Vec<State> = (first_i..first_i + count)
         .map(|i| {
@@ -359,18 +408,27 @@ fn population(
     r.checkpoint(0);
     if mode == "race" {
         // Stages "keep:sweeps[:b0]"; each lineage restarts every stage from its best state.
-        let spec = args.s("stages").unwrap_or("48:128,12:512,4:2048,1:8192").to_owned();
+        let spec = args
+            .s("stages")
+            .unwrap_or("48:128,12:512,4:2048,1:8192")
+            .to_owned();
         for stage in stages(&spec) {
             let keep = usize::try_from(c_atoll(stage)).unwrap_or(0);
             // The prototype reads sweeps after the first ':' (from the start
             // when there is none), and b0 after the second ':'.
             let (s, sb0) = match stage.split_once(':') {
-                Some((_, rest)) => (c_atoll(rest), rest.split_once(':').map_or(b0, |(_, b)| c_atof(b))),
+                Some((_, rest)) => (
+                    c_atoll(rest),
+                    rest.split_once(':').map_or(b0, |(_, b)| c_atof(b)),
+                ),
                 None => (c_atoll(stage), b0),
             };
             let mut order: Vec<usize> = (0..pop.len()).collect();
             cxxsort::sort(&mut order, |&a, &b| pop[a].e < pop[b].e);
-            let mut sorted: Vec<State> = order.into_iter().map(|i| std::mem::take(&mut pop[i])).collect();
+            let mut sorted: Vec<State> = order
+                .into_iter()
+                .map(|i| std::mem::take(&mut pop[i]))
+                .collect();
             sorted.truncate(keep.min(sorted.len()));
             pop = sorted;
             for lin in &mut pop {
@@ -411,7 +469,10 @@ fn population(
             let db = nb - beta;
             beta = nb;
             let emin = cur.iter().map(|c| c.e).min().unwrap_or(0);
-            let w: Vec<f64> = cur.iter().map(|c| (-db * (c.e - emin) as f64 / 1000.0).exp()).collect();
+            let w: Vec<f64> = cur
+                .iter()
+                .map(|c| (-db * (c.e - emin) as f64 / 1000.0).exp())
+                .collect();
             let tot: f64 = w.iter().fold(0.0, |acc, &x| acc + x);
             let rr = replicas as f64;
             let mut nxt2: Vec<State> = Vec::with_capacity(replicas);
@@ -444,7 +505,11 @@ fn population(
         }
     }
     // Optional sibling ratchet on the winner.
-    let (rounds, children, s2) = (args.i("rounds", 0), args.i("children", 4), args.i("rsweeps", 1024));
+    let (rounds, children, s2) = (
+        args.i("rounds", 0),
+        args.i("children", 4),
+        args.i("rsweeps", 1024),
+    );
     let rb0 = args.f("rb0", b0);
     if rounds > 0 {
         let mut w = State::new(m, &r.best);

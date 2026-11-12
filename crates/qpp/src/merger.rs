@@ -202,7 +202,10 @@ impl<'m> Merger<'m> {
             }
         }
         if x.e - before != want {
-            return Err(MergeMismatch { got: x.e - before, want });
+            return Err(MergeMismatch {
+                got: x.e - before,
+                want,
+            });
         }
         Ok(())
     }
