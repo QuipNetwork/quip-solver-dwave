@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quip-solver-dwave"
-version = "0.3.6rc2"
+version = "0.3.6rc3"
 description = "D-Wave (Ocean) QPU Ising miner for the quip.network v0.3 protocol"
 readme = "README.md"
 # Floor set by quip_solver_core, which requires >=3.11. Declaring 3.10 here
@@ -22,7 +22,7 @@ license = { text = "AGPL-3.0-or-later" }
 # not for a stable release. Move the pin deliberately, together with a version
 # bump.
 dependencies = [
-    "quip-solver-core==0.0.13rc1",
+    "quip-solver-core==0.0.13",
     "dwave-ocean-sdk>=9.0.0,<10",
 ]
 
