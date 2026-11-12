@@ -334,7 +334,7 @@ def _resolve_warm_start(
         raise _Rejected(miner_pb2.MALFORMED) from None
 
 
-def _sampling_params(
+def sampling_params(
     ising: miner_pb2.IsingProblem,
     session_target: Optional["miner_pb2.SetTarget"],
     session_sweeps: int,
@@ -382,6 +382,41 @@ def _sampling_params(
     return num_reads, anneal_time_us, num_sweeps
 
 
+def ordered_spins(
+    nodes: "np.ndarray | Sequence[int]", result: SampleResult
+) -> np.ndarray:
+    """The reads as ``(reads, len(nodes))`` int8 rows in ``nodes`` order.
+
+    One vectorised reorder from the sampler's column order. With no ``nodes``
+    the columns come back sorted by label.
+    """
+    order = nodes if len(nodes) else sorted(result.variables)
+    col_of = {v: i for i, v in enumerate(result.variables)}
+    spins = result.spins
+    n_cols = spins.shape[1]
+    # A node the sampler never reported reads as +1, matching the dict path's
+    # `sample.get(n, 1)`. Point those at one appended constant column so the
+    # reorder stays a single fancy-index.
+    idx = np.fromiter(
+        (col_of.get(int(n), n_cols) for n in order), dtype=np.intp, count=len(order)
+    )
+    if idx.size and idx.max() == n_cols:
+        spins = np.hstack([spins, np.ones((spins.shape[0], 1), dtype=np.int8)])
+    return spins[:, idx] if idx.size else spins[:, :0]
+
+
+def sampler_meta(result: SampleResult, num_sweeps: int) -> miner_pb2.SamplerMeta:
+    """``SamplerMeta`` of one sample: reads, the sweeps echo, and access time."""
+    return miner_pb2.SamplerMeta(
+        reads=result.num_reads,
+        # The resolved budget echo, not work performed: see sampling_params.
+        sweeps=num_sweeps,
+        device_access_time_us=result.device_access_time_us,
+        qpu_access_us=result.device_access_time_us,
+        extra=result.extra,
+    )
+
+
 def _build_result(
     job_id: bytes,
     nodes: "np.ndarray | Sequence[int]",
@@ -395,21 +430,9 @@ def _build_result(
     energy regardless, so it re-scores whatever it accepts. ``energy_milli`` is
     an integer field, so the only transform is quantizing to milli.
     """
-    # One vectorised reorder from the sampler's column order into session node
-    # order, then one vectorised bit pack for every read.
-    order = nodes if len(nodes) else sorted(result.variables)
-    col_of = {v: i for i, v in enumerate(result.variables)}
-    spins = result.spins
-    n_cols = spins.shape[1]
-    # A node the sampler never reported reads as +1, matching the dict path's
-    # `sample.get(n, 1)`. Point those at one appended constant column so the
-    # reorder stays a single fancy-index.
-    idx = np.fromiter(
-        (col_of.get(int(n), n_cols) for n in order), dtype=np.intp, count=len(order)
-    )
-    if idx.size and idx.max() == n_cols:
-        spins = np.hstack([spins, np.ones((spins.shape[0], 1), dtype=np.int8)])
-    ordered = spins[:, idx] if idx.size else spins[:, :0]
+    # One vectorised reorder into session node order, then one vectorised bit
+    # pack for every read.
+    ordered = ordered_spins(nodes, result)
 
     solutions = [
         miner_pb2.Solution(
@@ -419,20 +442,12 @@ def _build_result(
         for packed, qpu_e in zip(pack_spin_rows(ordered), result.energies)
     ]
 
-    meta = miner_pb2.SamplerMeta(
-        reads=result.num_reads,
-        # The resolved budget echo, not work performed: see _sampling_params.
-        sweeps=num_sweeps,
-        device_access_time_us=result.device_access_time_us,
-        qpu_access_us=result.device_access_time_us,
-        extra=result.extra,
-    )
     return [
         miner_pb2.MinerMsg(
             result=miner_pb2.Result(
                 job_id=job_id,
                 solutions=solutions,
-                meta=meta,
+                meta=sampler_meta(result, num_sweeps),
             )
         ),
         miner_pb2.MinerMsg(job_request=miner_pb2.JobRequest(credits=1)),
@@ -478,7 +493,7 @@ def handle_job(
     except _Rejected as exc:
         return _reject(job_id, exc.reason)
 
-    num_reads, anneal_time_us, num_sweeps = _sampling_params(
+    num_reads, anneal_time_us, num_sweeps = sampling_params(
         ising, session_target, session_sweeps, session_defaults
     )
     # Passed only when the job carries one, so a sampler double written before

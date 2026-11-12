@@ -45,7 +45,7 @@ def test_capabilities_message_matches_advertised_caps():
     assert caps.backend == BACKEND == miner_pb2.BACKEND_DWAVE_QPU
     assert caps.algorithm == ALGORITHM == miner_pb2.ALGORITHM_QUANTUM_ANNEAL
     assert caps.solver_id == SOLVER_ID == "quip-solver-dwave"
-    assert list(caps.supported_kinds) == [miner_pb2.ISING_SAMPLE]
+    assert list(caps.supported_kinds) == [miner_pb2.ISING_SAMPLE, miner_pb2.ISING_GENERATE]
     assert caps.max_nodes == MAX_NODES
     assert caps.max_edges == MAX_EDGES
     assert list(caps.features) == list(FEATURES)
@@ -60,9 +60,15 @@ def test_capabilities_message_matches_advertised_caps():
         miner_pb2.COEFFICIENT_ENCODING_F32,
         miner_pb2.COEFFICIENT_ENCODING_F64,
     ]
-    # No generator and no family: this miner samples explicit models only.
-    assert list(caps.generators) == []
-    assert list(caps.generated_families) == []
+    # Both generators, because one family is generated (FAM-58), and the one
+    # revision the lease tests and the --family gate cover.
+    assert list(caps.generators) == [
+        miner_pb2.GENERATOR_ALGORITHM_BLAKE3_CHACHA8_V1,
+        miner_pb2.GENERATOR_ALGORITHM_FAMILY_CHACHA8_V1,
+    ]
+    assert [(f.family_id, list(f.revisions), list(f.params_digests)) for f in caps.generated_families] == [
+        ("quip/twisted-ice-dimer", [1], [])
+    ]
     assert list(caps.accepted_families) == []
 
 

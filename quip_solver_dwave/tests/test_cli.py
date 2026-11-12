@@ -28,7 +28,7 @@ def test_capabilities(capsys):
     assert main(["--capabilities"]) == EXIT_CLEAN
     out = capsys.readouterr().out
     assert json.loads(out) == {
-        "supportedKinds": ["ISING_SAMPLE"],
+        "supportedKinds": ["ISING_SAMPLE", "ISING_GENERATE"],
         "maxNodes": 10_000,
         "maxEdges": 100_000,
         "features": ["quantum-anneal", "native-topology", "initial-spins"],
@@ -42,10 +42,14 @@ def test_capabilities(capsys):
             "COEFFICIENT_ENCODING_F32",
             "COEFFICIENT_ENCODING_F64",
         ],
-        "generators": [],
+        "generators": [
+            "GENERATOR_ALGORITHM_BLAKE3_CHACHA8_V1",
+            "GENERATOR_ALGORITHM_FAMILY_CHACHA8_V1",
+        ],
         "backend": "dwave-qpu",
         "algorithm": "quantum-anneal",
         "solverId": "quip-solver-dwave",
+        "generatedFamilies": [{"familyId": "quip/twisted-ice-dimer", "revisions": [1]}],
     }
     # One compact line, as serde_json writes it.
     assert out.count("\n") == 1 and ": " not in out

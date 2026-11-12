@@ -519,10 +519,12 @@ class OceanSampler:
     def _graph_plan(self, solver, nodes, edges):
         """The job graph's mapping into the solver's payload ordering.
 
-        Cached on the graph's identity because a session sends the same graph
-        every job: planning it costs ~10 ms, encoding against it ~0.6 ms.
+        Cached on the graph itself because a session sends the same graph
+        every job: planning it costs ~10 ms, encoding against it ~0.6 ms. The
+        key is the arrays, not their sizes. Two family-lease salts can carry
+        different graphs with equal counts, and a size key would encode the
+        second against the first one's plan. Comparing the arrays is a memcmp.
         """
-        key = (int(nodes.shape[0]), int(edges.shape[0]))
         with self._inflight_lock:
             cached = self._plan_cache
         encoder = self._encoder
@@ -531,11 +533,15 @@ class OceanSampler:
                 solver._encoding_qubits, solver._encoding_couplers
             )
             self._encoder = encoder
-        if cached is not None and cached[0] == key:
-            return encoder, cached[1]
+        if (
+            cached is not None
+            and np.array_equal(cached[0], nodes)
+            and np.array_equal(cached[1], edges)
+        ):
+            return encoder, cached[2]
         plan = encoder.plan(nodes, edges)
         with self._inflight_lock:
-            self._plan_cache = (key, plan)
+            self._plan_cache = (np.array(nodes, copy=True), np.array(edges, copy=True), plan)
         return encoder, plan
 
     def _clamp_defects(self, nodes, h, edges, j, nonce_seed, warm_start=None):

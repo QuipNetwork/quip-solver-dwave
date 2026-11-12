@@ -260,6 +260,45 @@ jobs with `TOPOLOGY_MISMATCH`.
 `--capabilities` prints `session_loop.capabilities_json`, the same JSON object
 that a Rust solver prints (`capabilities_json_from` in `session.rs`).
 
+### Salt leases (`ISING_GENERATE`)
+
+`leases.py` admits a lease and builds the problem of each salt. The session
+loop runs each admitted lease on its own thread. The wheel draws every
+problem: `lease.draw` for `BLAKE3_CHACHA8_V1`, and `families.generate` for
+`FAMILY_CHACHA8_V1`. `GENERATED_FAMILIES` lists the one generated revision,
+`quip/twisted-ice-dimer` revision 1. Add a revision only after the tests in
+`test_family_leases.py` and the `--family` gate in `test_conformance.py` cover
+it.
+
+- **Admission** follows "Generated jobs" in `SPEC.md` and FAM-47. The wheel's
+  `families.admit` checks the descriptor against every family in the wheel, so
+  `_admit_descriptor` takes codes 5 and 6 from `GENERATED_FAMILIES`. Admission
+  builds salt 0. The wheel raises `AdmissionError` for codes 12 and 13
+  before it draws, and `SaltSkipped` for a salt that has no instance.
+- **Bound on salts in flight.** Before the session draws a salt, the salt
+  takes a permit from `salt_slots`. `salt_slots` is a session-wide semaphore
+  that the queue depth sizes. A lease takes one credit, but its salts
+  share the depth that the plain jobs use, so a lease does not add QPU
+  concurrency.
+- **Billing.** Each salt has its own cancel key, `job_id#index`, under the
+  lease generation, so a `Cancel` reaches each salt on SAPI. The session bills
+  the access time of each salt when the salt finishes. This is true also when
+  a stop already closed the lease and the session drops the result.
+- **Energies.** The miner rescores each read exactly in integer milli and
+  adds the family `offset_milli`. It does not round the float energy of the
+  QPU. `Solution.spins` uses the instance node order.
+- **Closing.** A `LeaseDone` and its refund go to `out_q` as one list.
+  `request_iter` sends the list without other messages between them. A
+  `Cancel` or a passed `deadline_ms` closes a lease immediately. A `Shutdown`
+  stops the draw, and the session accepts results until
+  `grace_ms - min(grace_ms / 4, 250)`. A stream that closes abandons the
+  lease, with no `LeaseDone`. A lease that arrives after a `Cancel` covers its
+  generation gets a `LeaseDone` with zero salts.
+- **Refunds.** The refund follows the same rules as the refill of a plain
+  job. If the solver goes offline during the lease, the session parks the
+  refund until the next qblock. If the budget gate refuses the job, the
+  session withholds the refund.
+
 ## Measurement harness (QUI-1387 steps 5 to 7)
 
 Six scripts measure the hybrid pipeline against the recorded QPU attempts of a

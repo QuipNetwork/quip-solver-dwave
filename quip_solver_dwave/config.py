@@ -51,7 +51,7 @@ class SamplingDefaults:
     """Session-wide sampling parameters from ``Configure.backend_toml``.
 
     These are *defaults*, the lowest rung of the per-job precedence ladder in
-    :func:`quip_solver_dwave.job._sampling_params`: the job's own
+    :func:`quip_solver_dwave.job.sampling_params`: the job's own
     ``IsingProblem`` wins, then the session ``SetTarget``, then these, then the
     hard-coded fallback. Zero means "not set" on the wire, so it means the same
     here and leaves the next rung down in charge.

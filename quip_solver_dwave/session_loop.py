@@ -50,9 +50,29 @@ from quip_solver_dwave.config import (
     sampling_defaults_from_toml,
 )
 from quip_solver_dwave.history import HistoryRecorder, JobSample
-from quip_solver_dwave.job import ENCODINGS, SolverUnavailable, handle_job
+from quip_solver_dwave.job import (
+    ENCODINGS,
+    SolverUnavailable,
+    handle_job,
+    ordered_spins,
+    sampler_meta,
+    sampling_params,
+)
+from quip_solver_dwave.leases import (
+    NO_ENERGY,
+    LeaseHooks,
+    LeaseRejected,
+    LeaseTopology,
+    StopDrawing,
+    admit_lease,
+    generated_family_support,
+    generators,
+    lease_done,
+    run_lease,
+)
 from quip_solver_core.session import DEFAULT_NUM_SWEEPS, num_sweeps_from_toml
-from quip_solver_dwave.ocean import OceanSampler, is_solver_unavailable
+from quip_solver_dwave.ocean import OceanSampler, is_solver_offline, is_solver_unavailable
+from quip_solver_dwave.schedule import ScheduleError
 from quip_solver_dwave.profile import SnapshotRefresher
 from quip_solver_dwave.strategy import (
     RoundDecision,
@@ -308,7 +328,7 @@ class CancelTally:
 def resolve_queue_depth(*, coordinator: int, configured: int) -> int:
     """Pick the pipeline depth from the three rungs that can set it.
 
-    Mirrors the per-job ladder in :func:`quip_solver_dwave.job._sampling_params`:
+    Mirrors the per-job ladder in :func:`quip_solver_dwave.job.sampling_params`:
     the operator's ``backend_toml`` wins because QPU-specific knowledge lives
     there, then whatever the coordinator sent, then this backend's own measured
     default. Zero means "not set" on the wire and in the config, and the floor
@@ -649,13 +669,15 @@ def capabilities_message(
         backend=BACKEND,
         algorithm=ALGORITHM,
         solver_id=SOLVER_ID,
-        supported_kinds=[miner_pb2.ISING_SAMPLE],
+        supported_kinds=[miner_pb2.ISING_SAMPLE, miner_pb2.ISING_GENERATE],
         max_nodes=MAX_NODES,
         max_edges=MAX_EDGES,
         features=list(FEATURES),
         protocol_version=session_sdk.PROTOCOL_VERSION,
         stream_width=1,
         encodings=list(ENCODINGS),
+        generators=generators(),
+        generated_families=generated_family_support(),
     )
     if native_topology_hash:
         caps.native_topology_hash = native_topology_hash
@@ -755,11 +777,16 @@ def run_session(
     out_q.put(miner_pb2.MinerMsg(hello=hello))
 
     def request_iter() -> Iterator[miner_pb2.MinerMsg]:
+        # A list is one item so nothing interleaves inside it: a LeaseDone and
+        # its credit refund leave together (SPEC section 5, lease stops).
         while True:
             item = out_q.get()
             if item is _STOP:
                 return
-            yield item
+            if isinstance(item, list):
+                yield from item
+            else:
+                yield item
 
     jobs_done = 0
     # Watermark set by Cancel(max_generation): any job at or below it belongs to
@@ -770,6 +797,8 @@ def run_session(
     session_nodes: list[int] = []
     session_edges: list[Tuple[int, int]] = []
     session_hash: Optional[bytes] = None
+    # The cached Topology as a lease snapshots it at admission.
+    lease_topology: Optional[LeaseTopology] = None
     session_target: Optional[miner_pb2.SetTarget] = None
     session_sweeps: int = DEFAULT_NUM_SWEEPS
     session_defaults = SamplingDefaults()
@@ -808,6 +837,16 @@ def run_session(
     session_start = time.monotonic()
     best_energy_milli: Optional[int] = None
     PROGRESS_LOG_INTERVAL = 10
+    # Salts in flight across every lease, bounded by the pipeline depth: a
+    # lease takes one credit but expands into many QPU submissions, and this
+    # keeps them inside the depth the plain jobs already use. Sized at the
+    # first Configure, like the job pool.
+    salt_slots: Optional[threading.Semaphore] = None
+    lease_threads: list[threading.Thread] = []
+    # Set once Shutdown arrives: the monotonic lease close deadline.
+    lease_close_at: Optional[float] = None
+    # Set when the session ends without a Shutdown: leases are abandoned.
+    leases_aborted = threading.Event()
 
     def process_job(job, s_nodes, s_edges, s_hash, s_target, s_sweeps, s_defaults):
         # Runs on a pool thread: sample (blocking on the QPU), then enqueue
@@ -986,6 +1025,206 @@ def run_session(
                 continue
             out_q.put(reply)
 
+    def lease_hooks(
+        admitted, s_target, s_sweeps, s_defaults
+    ) -> LeaseHooks:
+        # One lease's view of the session. The sampling budget is resolved
+        # once, from the SetTarget the lease arrived under.
+        num_reads, anneal_time_us, num_sweeps = sampling_params(
+            miner_pb2.IsingProblem(), s_target, s_sweeps, s_defaults
+        )
+        offline = threading.Event()
+        short = _short_job_id(admitted.job_id)
+
+        def sample_salt(problem):
+            # The salt's own cancel key, filed under the lease generation, so
+            # a Cancel reaches every salt on the QPU the way it reaches a job.
+            key = admitted.job_id + b"#" + problem.index.to_bytes(8, "little")
+            inflight.add(key, admitted.generation)
+            if recorder is not None:
+                recorder.job_started(time.time())
+            started = time.monotonic()
+            try:
+                result = sampler.sample(
+                    problem.nodes,
+                    problem.h_milli / 1000.0,
+                    problem.edges,
+                    problem.j_milli / 1000.0,
+                    num_reads=num_reads,
+                    anneal_time_us=anneal_time_us or None,
+                    nonce_seed=problem.nonce,
+                    label=f"quip-{admitted.job_id.hex()[:8]}-{problem.index}",
+                    cancel_key=key,
+                )
+            except ScheduleError as exc:
+                # Every salt of the lease asks for the same anneal.
+                logger.warning("lease %s: %s; drawing no more salts", short, exc)
+                raise StopDrawing from exc
+            except Exception as exc:
+                if is_solver_offline(exc):
+                    offline.set()
+                    logger.warning(
+                        "[QPU] lease %s: solver offline (%s); drawing no more "
+                        "salts and parking its credit",
+                        short,
+                        exc,
+                    )
+                    raise StopDrawing from exc
+                with state_lock:
+                    cancelled = _is_abandoned(admitted.generation, cancel_watermark)
+                if cancelled:
+                    # A Cancel dropped it on SAPI: expected, and billed below.
+                    logger.debug("lease %s salt %d: cancelled", short, problem.index)
+                else:
+                    logger.exception(
+                        "lease %s salt %d: sampler raised; no result for it",
+                        short,
+                        problem.index,
+                    )
+                return None
+            finally:
+                inflight.release(key)
+                if recorder is not None:
+                    recorder.job_finished(time.time())
+                _bill_unobserved(sampler, pending_budget)
+            # Billed whatever happens to the answer: D-Wave charged for it.
+            if pending_budget is not None:
+                pending_budget.record_access_time(
+                    result.device_access_time_us, time.time()
+                )
+            spins = ordered_spins(problem.nodes, result)
+            with state_lock:
+                wasted = _is_abandoned(admitted.generation, cancel_watermark)
+            if wasted:
+                tally.missed()
+            if recorder is not None:
+                if wasted:
+                    recorder.record_wasted(time.time())
+                else:
+                    energies = problem.energies_milli(spins)
+                    target = (
+                        s_target.max_energy_milli if s_target is not None else None
+                    )
+                    recorder.record_job(
+                        JobSample(
+                            completed_at=time.time(),
+                            generation=admitted.generation,
+                            rtt_ms=int((time.monotonic() - started) * 1000),
+                            access_us=int(result.device_access_time_us),
+                            inflight_at_submit=int(result.inflight_at_submit),
+                            reads=int(result.num_reads),
+                            best_energy_milli=(
+                                int(energies.min()) if energies.size else None
+                            ),
+                            target_milli=target,
+                            hits=(
+                                int((energies <= target).sum())
+                                if target is not None
+                                else 0
+                            ),
+                            sapi_ms=_extra_int(
+                                miner_pb2.SamplerMeta(extra=result.extra), "sapi_ms"
+                            ),
+                        )
+                    )
+            return spins, sampler_meta(result, num_sweeps)
+
+        def stopped() -> bool:
+            with state_lock:
+                return _is_abandoned(admitted.generation, cancel_watermark)
+
+        def may_draw() -> bool:
+            # Each salt is QPU spend, so each one asks the gate, as a job
+            # does. A spent allotment ends the draw; the lease still closes.
+            if gate is None:
+                return True
+            with state_lock:
+                verdict = gate.on_job(time.time())
+            if not verdict.allowed and verdict.changed:
+                _log_allotment_spent(verdict.decision)
+            return verdict.allowed
+
+        def refund() -> list:
+            # The lease's credit comes back with its LeaseDone unless the
+            # session holds credits: parked while the solver is offline, or
+            # withheld once the gate is shut, both as for a plain job.
+            nonlocal parked_credits
+            if offline.is_set():
+                with state_lock:
+                    parked_credits += 1
+                return []
+            if gate is not None:
+                with state_lock:
+                    allowed = gate.on_job(time.time()).allowed
+                if not allowed:
+                    return []
+            return [miner_pb2.MinerMsg(job_request=miner_pb2.JobRequest(credits=1))]
+
+        def sampled() -> None:
+            nonlocal jobs_done
+            with state_lock:
+                jobs_done += 1
+
+        return LeaseHooks(
+            sample_salt=sample_salt,
+            send=out_q.put,
+            stopped=stopped,
+            close_at=lambda: lease_close_at,
+            aborted=leases_aborted.is_set,
+            may_draw=may_draw,
+            refund=refund,
+            sampled=sampled,
+        )
+
+    def lease_main(job, s_topology, s_target, s_sweeps, s_defaults, slots) -> None:
+        # One lease from admission to its LeaseDone, on its own thread, so a
+        # family instance built at admission never holds up the session loop.
+        short = _short_job_id(job.job_id)
+        try:
+            try:
+                admitted = admit_lease(
+                    job,
+                    s_topology,
+                    s_target,
+                    max_nodes=MAX_NODES,
+                    max_edges=MAX_EDGES,
+                )
+            except LeaseRejected as exc:
+                logger.warning(
+                    "[quip-solver-%s] lease %s: rejected %s (%s)",
+                    _LOG_BACKEND,
+                    short,
+                    _reject_reason_name(exc.reason),
+                    exc,
+                )
+                out_q.put(
+                    [
+                        miner_pb2.MinerMsg(
+                            reject=miner_pb2.Reject(job_id=job.job_id, reason=exc.reason)
+                        ),
+                        miner_pb2.MinerMsg(job_request=miner_pb2.JobRequest(credits=1)),
+                    ]
+                )
+                return
+            pool = job_pool
+
+            def submit(fn, problem):
+                if pool is None:
+                    fn(problem)
+                else:
+                    pool.submit(fn, problem).add_done_callback(_surface_pool_failure)
+
+            run_lease(
+                admitted,
+                lease_hooks(admitted, s_target, s_sweeps, s_defaults),
+                slots=slots,
+                submit=submit,
+            )
+        except Exception:
+            # No LeaseDone or refund can be trusted after this; the log line
+            # is what makes it diagnosable.
+            logger.exception("lease %s crashed", short)
+
     def _stop_history_threads() -> None:
         # The refresher stops first, and its join is bounded at two seconds:
         # what that order buys is the join finishing before the recorder
@@ -1130,6 +1369,8 @@ def run_session(
                     job_pool = ThreadPoolExecutor(
                         max_workers=max(1, depth), thread_name_prefix="dwave-job"
                     )
+                if salt_slots is None:
+                    salt_slots = threading.BoundedSemaphore(max(1, depth))
                 # Local binding so the None check narrows: pending_budget is
                 # captured by process_job, which blocks narrowing on it.
                 pacer = pending_budget
@@ -1183,6 +1424,7 @@ def run_session(
                 else:
                     session_edges = []
                 sampler.set_session_topology(session_nodes, session_edges)
+                lease_topology = LeaseTopology.from_proto(topo)
             elif which == "set_target":
                 session_target = cm.set_target
                 if recorder is not None:
@@ -1190,6 +1432,20 @@ def run_session(
             elif which == "job":
                 with state_lock:
                     cancelled = _is_abandoned(cm.job.generation, cancel_watermark)
+                is_lease = cm.job.kind == miner_pb2.ISING_GENERATE
+                if cancelled and is_lease:
+                    # A lease of an abandoned generation draws nothing. It
+                    # still closes: a LeaseDone with no salts and its refund.
+                    log_attempt(cm.job.job_id, cancelled=True, wall_ms=0)
+                    out_q.put(
+                        [
+                            lease_done(bytes(cm.job.job_id), 0, NO_ENERGY),
+                            miner_pb2.MinerMsg(
+                                job_request=miner_pb2.JobRequest(credits=1)
+                            ),
+                        ]
+                    )
+                    continue
                 if cancelled:
                     # Abandoned generation (coordinator reseeded): don't spend
                     # QPU access on it. Refund the credit so the coordinator
@@ -1230,6 +1486,28 @@ def run_session(
                     # credits alone, so refunding one here turns a shut gate into
                     # a reject/dispatch spin at memory speed — the credits come
                     # back at a qblock boundary, once the line allows it.
+                    continue
+                if is_lease:
+                    # The lease snapshots the topology and target it arrived
+                    # under; later messages change none of its salts.
+                    if salt_slots is None:
+                        salt_slots = threading.BoundedSemaphore(max(1, queue_depth))
+                    lease_threads[:] = [t for t in lease_threads if t.is_alive()]
+                    thread = threading.Thread(
+                        target=lease_main,
+                        args=(
+                            cm.job,
+                            lease_topology,
+                            session_target,
+                            session_sweeps,
+                            session_defaults,
+                            salt_slots,
+                        ),
+                        name=f"dwave-lease-{_short_job_id(cm.job.job_id)}",
+                        daemon=True,
+                    )
+                    lease_threads.append(thread)
+                    thread.start()
                     continue
                 # Submit for concurrent sampling; the pool bounds in-flight to
                 # queue_depth (credits keep the coordinator dispatching that many).
@@ -1425,6 +1703,10 @@ def run_session(
                 out_q.put(miner_pb2.MinerMsg(capabilities=capabilities))
             elif which == "shutdown":
                 grace_ms = cm.shutdown.grace_ms or 5000
+                # Leases stop drawing now and close by this deadline, which
+                # leaves the rest of the grace window for the drain.
+                close_ms = grace_ms - min(grace_ms // 4, 250)
+                lease_close_at = time.monotonic() + close_ms / 1000.0
                 break
 
             # Soft idle timeout: if the coordinator stalls mid-session.
@@ -1433,6 +1715,15 @@ def run_session(
                 logger.info("idle timeout (%ss) — clean exit", idle_s)
                 break
 
+        # Leases close before the pool drains. After a Shutdown each one sends
+        # its LeaseDone by the close deadline; a session that ended any other
+        # way abandons them, without a LeaseDone.
+        if lease_close_at is None:
+            leases_aborted.set()
+        join_until = (lease_close_at or time.monotonic()) + 0.5
+        for thread in lease_threads:
+            thread.join(timeout=max(0.0, join_until - time.monotonic()))
+        leases_aborted.set()
         # Drain in-flight submissions (they enqueue their Results) before the
         # end-of-outbound marker, bounded by the grace window.
         if job_pool is not None:
@@ -1461,6 +1752,7 @@ def run_session(
         logger.exception("session failed")
         return EXIT_INTERNAL_FATAL
     finally:
+        leases_aborted.set()
         if job_pool is not None:
             job_pool.shutdown(wait=False, cancel_futures=True)
         try:
