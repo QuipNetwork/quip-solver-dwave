@@ -7,8 +7,9 @@ That work is GIL-bound, so it does not spread across cores, and at production
 size it was the reason a single process could not feed the chip at its own
 rate.
 
-These tests pin the two things that make the numpy path safe: the wire format
-really is one signed byte per spin, and the reordering puts every spin exactly
+These tests pin the two things that make the numpy path safe: one vectorised
+bit pack produces exactly the SDK's packed wire form (node i is bit i % 8 of
+byte i / 8, LSB first, 1 = +1), and the reordering puts every spin exactly
 where the dict path put it.
 """
 
@@ -20,7 +21,12 @@ import pytest
 from quip_solver_core import wire
 
 from quip_solver_dwave.defects import DefectInfo, reconstruct_samples
-from quip_solver_dwave.job import _build_result, sample_dict_to_vector, spins_to_bytes
+from quip_solver_dwave.job import (
+    _build_result,
+    pack_spin_rows,
+    sample_dict_to_vector,
+    spins_to_bytes,
+)
 from quip_solver_dwave.ocean import SampleResult
 
 
@@ -32,19 +38,21 @@ def _rng():
 
 
 @pytest.mark.parametrize("n", [0, 1, 7, 8, 9, 64, 4577])
-def test_the_wire_format_is_one_signed_byte_per_spin(n):
-    # encode_spins takes a Python list, which is the cost being removed. If the
-    # SDK ever moves to real bit packing this fails loudly, which is the point:
-    # the numpy path would silently produce a wrong-length payload otherwise.
+def test_the_numpy_pack_matches_the_sdk_packed_form(n):
+    # encode_spins_packed takes a Python list, which is the cost being removed.
+    # The partial last byte matters most: its padding bits must be zero.
     row = _rng().choice(np.array([-1, 1], dtype=np.int8), size=n)
-    assert wire.encode_spins(row.tolist()) == row.astype(np.int8).tobytes()
+    assert pack_spin_rows(row[None, :])[0] == wire.encode_spins_packed(row.tolist())
 
 
-def test_the_wire_format_holds_for_arbitrary_random_rows():
+def test_the_numpy_pack_holds_for_arbitrary_random_rows():
     rng = _rng()
     for _ in range(200):
-        row = rng.choice(np.array([-1, 1], dtype=np.int8), size=int(rng.integers(0, 300)))
-        assert wire.encode_spins(row.tolist()) == row.astype(np.int8).tobytes()
+        n = int(rng.integers(0, 300))
+        rows = rng.choice(np.array([-1, 1], dtype=np.int8), size=(3, n))
+        packed = pack_spin_rows(rows)
+        assert packed == [wire.encode_spins_packed(r.tolist()) for r in rows]
+        assert [wire.decode_spins_packed(b, n) for b in packed] == rows.tolist()
 
 
 # --- the reorder must match what the dict path produced --------------------
@@ -76,7 +84,7 @@ def test_spins_come_out_in_session_node_order_not_sampler_order():
 
     msgs = _build_result(b"j", nodes, _result(spins, variables, [-1.0]), 64)
 
-    assert msgs[0].result.solutions[0].spins_bytes == bytes([0xFF, 0x01, 0x01])
+    assert msgs[0].result.solutions[0].spins == bytes([0b110])  # -1, +1, +1
 
 
 def test_a_node_the_sampler_never_reported_defaults_to_plus_one():
@@ -88,7 +96,7 @@ def test_a_node_the_sampler_never_reported_defaults_to_plus_one():
 
     msgs = _build_result(b"j", nodes, _result(spins, variables, [0.0]), 64)
 
-    assert msgs[0].result.solutions[0].spins_bytes == bytes([0xFF, 0x01, 0xFF])
+    assert msgs[0].result.solutions[0].spins == bytes([0b010])  # -1, +1, -1
 
 
 def test_every_read_becomes_its_own_solution():
@@ -117,7 +125,7 @@ def test_the_numpy_path_matches_the_dict_path_at_production_size():
     sols = msgs[0].result.solutions
     assert len(sols) == 48
     for i in range(48):
-        assert sols[i].spins_bytes == _legacy_solution_bytes(
+        assert sols[i].spins == _legacy_solution_bytes(
             spins[i], variables, nodes
         )
 
@@ -170,7 +178,7 @@ def test_a_clamped_qubit_reaches_the_wire_at_its_own_position():
 
     msgs = _build_result(b"j", nodes, _result(out, variables, energies), 64)
 
-    assert msgs[0].result.solutions[0].spins_bytes == bytes([0x01, 0xFF, 0x01])
+    assert msgs[0].result.solutions[0].spins == bytes([0b101])  # +1, -1, +1
 
 
 def test_the_clamped_energy_offset_is_applied_to_every_read():

@@ -118,9 +118,15 @@ payload, rather than a starting point. `test_qp_encoding` asserts byte equality 
 it, including at production scale (4577 qubits, 41514 couplers). If you change
 the encoder, that equality is the contract.
 
+Going in, `job.decode_coefficients_milli` decodes `IsingProblem.h` and `.j`
+from any `CoefficientEncoding` with numpy, using the reject rules of
+quip-solver-core's `encoding.rs`. Every value must be a whole i32 milli value,
+or the job is `MALFORMED`. `test_coefficients` holds the cases.
+
 Coming back, spins stay in the sampler's `(reads, qubits)` int8 array. The wire
-format is one signed byte per spin, so `row.tobytes()` is already the payload.
-`test_spin_encoding` pins that against `wire.encode_spins`.
+form packs eight spins into each byte, lowest bit first, and a 1 bit is +1. `job.pack_spin_rows`
+packs all reads in one `np.packbits` call. `test_spin_encoding` checks that
+call against `wire.encode_spins_packed`.
 
 `answer.answer_view` reads the answer straight off the `Future`, never
 through `Future.sampleset`. That property turns the decoder's numpy arrays
@@ -225,6 +231,20 @@ When the live chip is missing qubits or couplers the session topology names,
 the QPU does not have makes SAPI reject the whole problem. This path still
 speaks dicts; the normal case (live graph matches) passes arrays straight
 through.
+
+`run_session` builds one `Capabilities` message per session. `Hello` carries
+it, and every `GetCapabilities` reply repeats it, because quip-solver-drive
+requires the two to agree field for field. `Capabilities.native_topology_hash`
+uses `quip_solver_core.session.native_topology_hash`, the FAM-19 topology
+order digest, so it matches what a Rust solver advertises for the same graph.
+The session sends the hash only when the sampler knows its graph before `Hello`. A live
+device connects at `Configure`, after `Hello`, so a live session sends no
+hash. The miner never calls the wheel's `session.topology_fit`. It keeps
+clamping the qubits and couplers that the chip lacks, and it does not refuse
+jobs with `TOPOLOGY_MISMATCH`.
+
+`--capabilities` prints `session_loop.capabilities_json`, the same JSON object
+that a Rust solver prints (`capabilities_json_from` in `session.rs`).
 
 ## Conventions
 

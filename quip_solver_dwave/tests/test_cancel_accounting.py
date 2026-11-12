@@ -97,8 +97,10 @@ def _job() -> miner_pb2.CoordMsg:
             generation=JOB_GENERATION,
             deadline_ms=int(time.time() * 1000) + 3_600_000,
             ising=miner_pb2.IsingProblem(
-                h_milli_le32=wire.encode_i32_le([1000, -1000]),
-                j_milli_le32=wire.encode_i32_le([500]),
+                encoding=miner_pb2.COEFFICIENT_ENCODING_I32,
+                scale=1000,
+                h=wire.encode_i32_le([1000, -1000]),
+                j=wire.encode_i32_le([500]),
                 edges=miner_pb2.EdgeList(u=[0], v=[1]),
                 num_reads=1,
             ),
@@ -123,7 +125,7 @@ def _run(monkeypatch, sampler: BlockingSampler, usage_db: str) -> List:
 
     def responses():
         yield miner_pb2.CoordMsg(
-            welcome=miner_pb2.Welcome(protocol_version=1)
+            welcome=miner_pb2.Welcome(protocol_version=2)
         )
         yield _configure(usage_db)
         # A boundary the gate can join on, so the job is not refused on budget.
@@ -245,7 +247,7 @@ def test_a_job_of_a_live_generation_is_not_cancelled(monkeypatch, usage_db):
 
     def responses():
         yield miner_pb2.CoordMsg(
-            welcome=miner_pb2.Welcome(protocol_version=1)
+            welcome=miner_pb2.Welcome(protocol_version=2)
         )
         yield _configure(usage_db)
         yield _cancel(1)

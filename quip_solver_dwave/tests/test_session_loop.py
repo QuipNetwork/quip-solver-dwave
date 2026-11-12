@@ -4,13 +4,24 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from quip_solver_dwave.session_loop import (
     _is_abandoned,
     capabilities_message,
     log_attempt,
     log_progress,
 )
-from quip_solver_dwave import ALGORITHM, BACKEND, FEATURES, MAX_EDGES, MAX_NODES
+from quip_solver_core import miner_pb2
+
+from quip_solver_dwave import (
+    ALGORITHM,
+    BACKEND,
+    FEATURES,
+    MAX_EDGES,
+    MAX_NODES,
+    SOLVER_ID,
+)
 
 
 def test_mempool_generation_is_never_abandoned():
@@ -35,14 +46,28 @@ def test_capabilities_message_matches_advertised_caps():
     # Must answer a GetCapabilities without touching the device, so it is a
     # pure function of the same static numbers Hello and --capabilities use.
     caps = capabilities_message()
-    assert caps.backend == BACKEND
-    assert caps.algorithm == ALGORITHM
-    assert list(caps.supported_kinds) == [1]  # ISING_SAMPLE
+    assert caps.backend == BACKEND == miner_pb2.BACKEND_DWAVE_QPU
+    assert caps.algorithm == ALGORITHM == miner_pb2.ALGORITHM_QUANTUM_ANNEAL
+    assert caps.solver_id == SOLVER_ID == "quip-solver-dwave"
+    assert list(caps.supported_kinds) == [miner_pb2.ISING_SAMPLE]
     assert caps.max_nodes == MAX_NODES
     assert caps.max_edges == MAX_EDGES
     assert list(caps.features) == list(FEATURES)
-    assert caps.protocol_version == 1
+    assert caps.protocol_version == 2
     assert caps.stream_width == 1
+    # Every encoding the decoder accepts, I32 (the canonical milli form) first.
+    assert list(caps.encodings) == [
+        miner_pb2.COEFFICIENT_ENCODING_I32,
+        miner_pb2.COEFFICIENT_ENCODING_I16,
+        miner_pb2.COEFFICIENT_ENCODING_I8,
+        miner_pb2.COEFFICIENT_ENCODING_F16,
+        miner_pb2.COEFFICIENT_ENCODING_F32,
+        miner_pb2.COEFFICIENT_ENCODING_F64,
+    ]
+    # No generator and no family: this miner samples explicit models only.
+    assert list(caps.generators) == []
+    assert list(caps.generated_families) == []
+    assert list(caps.accepted_families) == []
 
 
 # First 8 bytes of a longer job id, matching the observed CPU miner line.
@@ -211,3 +236,52 @@ def test_configure_estimates_the_wait_when_spend_is_past_the_line(caplog):
     assert "no credits are granted" in caplog.text
     assert "Next window in 48h 0m" in caplog.text
     assert "following qblock boundary" in caplog.text
+
+
+@pytest.mark.parametrize("version", [0, 1, 3])
+def test_a_welcome_for_another_protocol_is_fatal(monkeypatch, tmp_path, version):
+    # The SDK's check_welcome decides: this miner speaks exactly protocol 2.
+    from quip_solver_dwave import EXIT_INTERNAL_FATAL
+    from quip_solver_dwave.tests.test_solver_offline import FlakySampler, _run
+
+    def script(sent):
+        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=version))
+
+    codes: list = []
+    sent = _run(monkeypatch, FlakySampler(0), str(tmp_path / "u.db"), script, codes)
+
+    assert codes == [EXIT_INTERNAL_FATAL]
+    fatals = [m.fatal for m in sent if m.WhichOneof("msg") == "fatal"]
+    assert [f.reason for f in fatals] == ["bad welcome protocol_version"]
+
+
+def test_get_capabilities_repeats_the_hello_capabilities(monkeypatch, tmp_path):
+    # quip-solver-drive grades the GetCapabilities reply against the Hello
+    # field for field, the native topology hash included. The mock sampler
+    # learns a hash only when the session Topology arrives, after Hello, so a
+    # reply rebuilt at that point would disagree with the Hello.
+    from quip_solver_dwave.ocean import OceanSampler
+    from quip_solver_dwave.tests.test_solver_offline import (
+        _configure,
+        _run,
+        _topology,
+        _wait_for,
+    )
+
+    sampler = OceanSampler(mock=True)
+
+    def script(sent):
+        yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=2))
+        yield _configure(str(tmp_path / "u.db"))
+        yield _topology()
+        yield miner_pb2.CoordMsg(get_capabilities=miner_pb2.GetCapabilities())
+        _wait_for(sent, "capabilities", 1)
+        yield miner_pb2.CoordMsg(shutdown=miner_pb2.Shutdown(grace_ms=100))
+
+    sent = _run(monkeypatch, sampler, str(tmp_path / "u.db"), script)
+    sampler.close()
+
+    assert sampler.native_topology_hash is not None  # it did change mid-session
+    hello = next(m.hello for m in sent if m.WhichOneof("msg") == "hello")
+    reply = next(m.capabilities for m in sent if m.WhichOneof("msg") == "capabilities")
+    assert reply == hello.capabilities == capabilities_message()

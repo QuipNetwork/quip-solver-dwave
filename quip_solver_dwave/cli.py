@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import signal
@@ -11,7 +10,7 @@ import sys
 import threading
 import time
 
-from google.protobuf.json_format import MessageToDict
+from quip_solver_core.session import PROTOCOL_VERSION
 
 from quip_solver_dwave import (
     EXIT_CLEAN,
@@ -40,7 +39,11 @@ from quip_solver_dwave.ocean import (
     ocean_importable,
 )
 from quip_solver_dwave.report import render_profile
-from quip_solver_dwave.session_loop import capabilities_message, run_session_sync
+from quip_solver_dwave.session_loop import (
+    capabilities_json,
+    capabilities_message,
+    run_session_sync,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -184,20 +187,12 @@ def run_dump_topology(args) -> int:
 
 
 def print_capabilities() -> None:
-    """SPEC section 8: print the protobuf JSON mapping of ``Capabilities``.
+    """SPEC section 8: print ``Capabilities`` as one JSON line.
 
-    Field names are lowerCamelCase and the output stays identical to the
-    in-session ``GetCapabilities`` reply — the two are one message.
+    The same message the in-session ``GetCapabilities`` reply carries, in the
+    shape every quip-solver-core solver prints (``capabilities_json``).
     """
-    print(
-        json.dumps(
-            MessageToDict(
-                capabilities_message(),
-                always_print_fields_with_no_presence=True,
-                preserving_proto_field_name=False,
-            )
-        )
-    )
+    print(capabilities_json(capabilities_message()))
 
 
 def run_check(*, force_mock: bool = False) -> int:
@@ -278,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.version:
-        print(f"quip-dwave-qa {__version__} protocol 1")
+        print(f"quip-dwave-qa {__version__} protocol {PROTOCOL_VERSION}")
         return EXIT_CLEAN
     if args.capabilities:
         print_capabilities()

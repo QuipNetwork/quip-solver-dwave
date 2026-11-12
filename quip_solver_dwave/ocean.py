@@ -24,6 +24,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
 import numpy as np
+from quip_solver_core.session import native_topology_hash
 
 from quip_solver_dwave.answer import AnswerView, answer_view
 from quip_solver_dwave.qp import QpEncoder, build_submission_body
@@ -32,7 +33,6 @@ from quip_solver_dwave.defects import (
     prepare_problem,
     reconstruct_samples,
 )
-from quip_solver_dwave.topology import native_topology_hash
 
 logger = logging.getLogger(__name__)
 

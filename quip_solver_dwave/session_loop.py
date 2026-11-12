@@ -7,6 +7,8 @@ over UDS).
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import queue
 import threading
@@ -30,6 +32,7 @@ from quip_solver_dwave import (
     FEATURES,
     MAX_EDGES,
     MAX_NODES,
+    SOLVER_ID,
 )
 from quip_solver_dwave.attempts import (
     default_attempts_dir,
@@ -50,7 +53,7 @@ from quip_solver_dwave.config import (
     sampling_defaults_from_toml,
 )
 from quip_solver_dwave.history import HistoryRecorder, JobSample
-from quip_solver_dwave.job import SolverUnavailable, handle_job
+from quip_solver_dwave.job import ENCODINGS, SolverUnavailable, handle_job
 from quip_solver_core.session import DEFAULT_NUM_SWEEPS, num_sweeps_from_toml
 from quip_solver_dwave.ocean import OceanSampler, is_solver_unavailable
 from quip_solver_dwave.profile import SnapshotRefresher
@@ -623,24 +626,85 @@ def _is_abandoned(generation: int, watermark: int) -> bool:
     return generation != 0 and generation <= watermark
 
 
-def capabilities_message() -> miner_pb2.Capabilities:
+def capabilities_message(
+    native_topology_hash: Optional[bytes] = None,
+) -> miner_pb2.Capabilities:
     """Build the ``Capabilities`` message: what this backend supports.
 
     Must answer without touching the device, so it is a pure function of the
     same static numbers ``Hello`` advertises. ``--capabilities`` prints the
     protobuf JSON of this exact message and the in-session ``GetCapabilities``
     reply wraps it, so the two answers cannot drift apart (SPEC section 8).
+    The one input that is not static is the working-graph hash: a session
+    passes the sampler's, and ``--capabilities`` runs with the device closed
+    and passes none.
     """
-    return miner_pb2.Capabilities(
+    caps = miner_pb2.Capabilities(
         backend=BACKEND,
         algorithm=ALGORITHM,
+        solver_id=SOLVER_ID,
         supported_kinds=[miner_pb2.ISING_SAMPLE],
         max_nodes=MAX_NODES,
         max_edges=MAX_EDGES,
         features=list(FEATURES),
         protocol_version=session_sdk.PROTOCOL_VERSION,
         stream_width=1,
+        encodings=list(ENCODINGS),
     )
+    if native_topology_hash:
+        caps.native_topology_hash = native_topology_hash
+    return caps
+
+
+def _family_support_json(entries) -> list[dict]:
+    out = []
+    for e in entries:
+        view: dict = {"familyId": e.family_id}
+        if e.revisions:
+            view["revisions"] = list(e.revisions)
+        if e.params_digests:
+            view["paramsDigests"] = [base64.b64encode(d).decode() for d in e.params_digests]
+        out.append(view)
+    return out
+
+
+def capabilities_json(caps: miner_pb2.Capabilities) -> str:
+    """The ``--capabilities`` line: what a quip-solver-core 0.0.11 Rust solver prints.
+
+    Mirrors ``session.rs`` ``capabilities_json_from`` key for key, so a caller
+    parses every solver binary the same way. The identity enums print as
+    their stable lowercase names, the enum lists as proto names, and ``bytes``
+    as standard base64. Unset optional fields, an empty ``solverId``, and
+    empty family lists are omitted.
+    """
+    view: dict = {
+        "supportedKinds": [miner_pb2.JobKind.Name(k) for k in caps.supported_kinds],
+        "maxNodes": caps.max_nodes,
+        "maxEdges": caps.max_edges,
+        "features": list(caps.features),
+        "protocolVersion": caps.protocol_version,
+        "streamWidth": caps.stream_width,
+    }
+    if caps.HasField("native_topology_hash"):
+        view["nativeTopologyHash"] = base64.b64encode(caps.native_topology_hash).decode()
+    view["encodings"] = [miner_pb2.CoefficientEncoding.Name(e) for e in caps.encodings]
+    view["generators"] = [miner_pb2.GeneratorAlgorithm.Name(g) for g in caps.generators]
+    view["backend"] = session_sdk.BACKEND_NAMES[caps.backend]
+    view["algorithm"] = session_sdk.ALGORITHM_NAMES[caps.algorithm]
+    for field, key in (
+        ("max_degree", "maxDegree"),
+        ("max_local_field_milli", "maxLocalFieldMilli"),
+        ("exact_resolution_milli", "exactResolutionMilli"),
+    ):
+        if caps.HasField(field):
+            view[key] = getattr(caps, field)
+    if caps.solver_id:
+        view["solverId"] = caps.solver_id
+    if caps.generated_families:
+        view["generatedFamilies"] = _family_support_json(caps.generated_families)
+    if caps.accepted_families:
+        view["acceptedFamilies"] = _family_support_json(caps.accepted_families)
+    return json.dumps(view, separators=(",", ":"))
 
 
 def _unix_target(uri: str) -> str:
@@ -668,22 +732,17 @@ def run_session(
 ) -> int:
     """Run one miner session; return a process exit code."""
     target = _unix_target(coordinator_uri)
+    # One Capabilities per session: Hello carries it and every GetCapabilities
+    # reply repeats it, so the two answers agree field for field. The native
+    # hash is the one the sampler knows now; it learns a graph only later (the
+    # device connects at Configure, the mock adopts the session Topology), and
+    # a later hash would make the reply contradict the Hello.
+    capabilities = capabilities_message(sampler.native_topology_hash)
     try:
-        hello = session_sdk.build_hello(
-            miner_id,
-            BACKEND,
-            ALGORITHM,
-            [miner_pb2.ISING_SAMPLE],
-            MAX_NODES,
-            MAX_EDGES,
-            features=list(FEATURES),
-        )
+        hello = session_sdk.build_hello(miner_id, capabilities)
     except session_sdk.MissingToken:
         logger.error("QUIP_SESSION_TOKEN unset")
         return EXIT_TOKEN_REJECTED
-
-    if sampler.native_topology_hash:
-        hello.native_topology_hash = sampler.native_topology_hash
 
     out_q: queue.Queue = queue.Queue()
     # Pre-buffer Hello so the coordinator handshake has something immediately.
@@ -974,9 +1033,14 @@ def run_session(
             last_activity = time.monotonic()
             which = cm.WhichOneof("msg")
             if which == "welcome":
-                ver = cm.welcome.protocol_version
-                if ver not in (0, 1):
-                    logger.error("bad Welcome protocol_version=%s", ver)
+                try:
+                    session_sdk.check_welcome(cm.welcome)
+                except session_sdk.BadWelcome:
+                    logger.error(
+                        "bad Welcome protocol_version=%s (this miner speaks %s)",
+                        cm.welcome.protocol_version,
+                        session_sdk.PROTOCOL_VERSION,
+                    )
                     out_q.put(
                         miner_pb2.MinerMsg(
                             fatal=miner_pb2.Fatal(
@@ -1352,7 +1416,7 @@ def run_session(
                     watermark = cancel_watermark
                 out_q.put(_status(miner_id, done, abandoned=watermark))
             elif which == "get_capabilities":
-                out_q.put(miner_pb2.MinerMsg(capabilities=capabilities_message()))
+                out_q.put(miner_pb2.MinerMsg(capabilities=capabilities))
             elif which == "shutdown":
                 grace_ms = cm.shutdown.grace_ms or 5000
                 break

@@ -22,7 +22,7 @@ license = { text = "AGPL-3.0-or-later" }
 # not for a stable release. Move the pin deliberately, together with a version
 # bump.
 dependencies = [
-    "quip-solver-core==0.0.1rc2",
+    "quip-solver-core==0.0.11",
     "dwave-ocean-sdk>=9.0.0,<10",
 ]
 
@@ -45,3 +45,8 @@ include = ["quip_solver_dwave*"]
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
+
+[tool.uv]
+# quip-solver-core comes from our own release pipeline, so the global
+# exclude-newer window does not apply to it.
+exclude-newer-package = { quip-solver-core = false }
