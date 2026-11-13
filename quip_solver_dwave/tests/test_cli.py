@@ -4,6 +4,7 @@ import json
 import signal
 
 import pytest
+from quip_solver_core import families
 
 from quip_solver_dwave import (
     EXIT_CLEAN,
@@ -49,7 +50,9 @@ def test_capabilities(capsys):
         "backend": "dwave-qpu",
         "algorithm": "quantum-anneal",
         "solverId": "quip-solver-dwave",
-        "generatedFamilies": [{"familyId": "quip/twisted-ice-dimer", "revisions": [1]}],
+        "generatedFamilies": [
+            {"familyId": family_id, "revisions": [revision]} for family_id, revision in families.supported()
+        ],
         "acceptedFamilies": [{"familyId": "quip/twisted-ice-dimer", "revisions": [1]}],
     }
     # One compact line, as serde_json writes it.

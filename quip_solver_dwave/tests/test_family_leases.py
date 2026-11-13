@@ -172,7 +172,7 @@ def _descriptor(**kw) -> miner_pb2.FamilyDescriptor:
         ({"descriptor": _descriptor(family_id="X")}, miner_pb2.MALFORMED),
         ({"descriptor": _descriptor(revision=0)}, miner_pb2.MALFORMED),
         # Codes 5 and 6 come from this miner's list, not the wheel's registry.
-        ({"descriptor": _descriptor(family_id="quip/ice-glass")}, miner_pb2.FAMILY_UNSUPPORTED),
+        ({"descriptor": _descriptor(family_id="quip/unregistered")}, miner_pb2.FAMILY_UNSUPPORTED),
         ({"descriptor": _descriptor(revision=2)}, miner_pb2.FAMILY_UNSUPPORTED),
         ({"descriptor": _descriptor(params=b"\x02", params_digest=families.params_digest(b"\x02"))}, miner_pb2.MALFORMED),
         ({"descriptor": _descriptor(params_digest=b"\0" * 32)}, miner_pb2.MALFORMED),
@@ -182,7 +182,7 @@ def _descriptor(**kw) -> miner_pb2.FamilyDescriptor:
         ),
         # Code 5 beats the topology hash, which beats code 11.
         (
-            {"descriptor": _descriptor(family_id="quip/ice-glass"), "topology_hash": b"\0" * 32},
+            {"descriptor": _descriptor(family_id="quip/unregistered"), "topology_hash": b"\0" * 32},
             miner_pb2.FAMILY_UNSUPPORTED,
         ),
         ({"topology_hash": b"\0" * 32, "topology_order_digest": b"\1" * 32}, miner_pb2.TOPOLOGY_MISMATCH),

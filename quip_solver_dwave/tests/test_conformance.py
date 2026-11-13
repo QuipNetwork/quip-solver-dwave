@@ -20,6 +20,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from quip_solver_core import families
 
 
 def _drive_bin() -> Path:
@@ -96,4 +97,5 @@ def test_family_gate_against_quip_solver_drive():
     # FAM-47 admission, a full lease, a stale lease and an expired one. Its
     # instances have 80 nodes, past the exact mock, so the SA mock answers.
     out = _drive(["--family"], backend="sa", timeout=120)
-    assert "[pass] supported-revision quip/twisted-ice-dimer@1" in out
+    for family_id, revision in families.supported():
+        assert f"[pass] supported-revision {family_id}@{revision}" in out
