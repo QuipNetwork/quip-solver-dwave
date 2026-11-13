@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, Optional, cast
 
 import pytest
 
-from quip_solver_dwave.profile import SLOTS, Profile, SlotStats, Snapshot, slot_of
+from quip_solver_dwave.budget import ParticipationDecision
+from quip_solver_dwave.profile import SLOTS, Profile, SlotStats, Snapshot, SnapshotRefresher, slot_of
 from quip_solver_dwave.strategy import (
+    REACH_MIN_JOBS,
+    REASON_EASY_TARGET,
     REASON_EXPLORE,
     REASON_FAST_SLOT,
     REASON_NO_DATA,
     REASON_SATURATED,
     REASON_SLOW_SLOT,
+    RoundStrategy,
     StrategyConfig,
+    TargetReach,
+    TargetReachTracker,
     decide_round,
     describe_round_decision,
     rounds_by_slot,
@@ -55,7 +61,7 @@ def _snapshot(
 
 
 def _decide(snapshot, *, headroom_us=HEADROOM_US, config=None, explore_draw=0.5, period_end=PERIOD_END,
-            accrual=ACCRUAL_US_PER_S):
+            accrual=ACCRUAL_US_PER_S, reach=None):
     return decide_round(
         now=NOW,
         headroom_us=headroom_us,
@@ -64,6 +70,7 @@ def _decide(snapshot, *, headroom_us=HEADROOM_US, config=None, explore_draw=0.5,
         snapshot=snapshot,
         config=config or StrategyConfig(),
         explore_draw=explore_draw,
+        reach=reach,
     )
 
 
@@ -180,14 +187,106 @@ def test_verdict_order_is_explore_saturated_bar():
 def test_the_log_line_names_the_numbers():
     join = _decide(_snapshot({SLOT_NOW: 3.0}))
     line = describe_round_decision(340, join, HEADROOM_US)
-    assert line.startswith("[QPU] qblock 340: join (fast-slot)")
+    assert line.startswith("[QPU] gen 340: join (fast-slot)")
     assert "1791 jobs at 3.00 jobs/s in d06 13h" in line and "bar 657" in line
     assert "funds cover" in line and "rounds left" in line and "headroom 8s" in line
     skip = _decide(_snapshot({SLOT_NOW: 0.1}))
     line = describe_round_decision(341, skip, HEADROOM_US)
-    assert line.startswith("[QPU] qblock 341: skip (slow-slot)")
+    assert line.startswith("[QPU] gen 341: skip (slow-slot)")
     assert "60 jobs at 0.10 jobs/s in d06 13h is under the bar of 657" in line
     covered = _decide(_snapshot(), headroom_us=1e12)
     line = describe_round_decision(342, covered, 1e12)
     assert "join (saturated)" in line and "every round is covered" in line
     assert "P(win)" not in line
+
+
+# -- easy rounds -------------------------------------------------------------
+
+TARGET_MILLI = -4_945_000
+
+
+def test_an_easy_round_is_joined_in_a_slow_slot():
+    # The log that prompted this: every recent job beat the target by about
+    # 90 units, and the slot rule still sat the round out.
+    reach = TargetReach(jobs=16, reached=16, target_milli=TARGET_MILLI)
+    d = _decide(_snapshot({SLOT_NOW: 0.1}), reach=reach)
+    assert d.join and d.reason == REASON_EASY_TARGET
+    assert d.reach == reach
+
+
+def test_a_hard_round_still_follows_the_slot_rule():
+    reach = TargetReach(jobs=16, reached=7, target_milli=TARGET_MILLI)
+    d = _decide(_snapshot({SLOT_NOW: 0.1}), reach=reach)
+    assert not d.join and d.reason == REASON_SLOW_SLOT
+
+
+def test_too_few_recent_jobs_are_not_evidence():
+    reach = TargetReach(jobs=REACH_MIN_JOBS - 1, reached=REACH_MIN_JOBS - 1, target_milli=TARGET_MILLI)
+    d = _decide(_snapshot({SLOT_NOW: 0.1}), reach=reach)
+    assert d.reason == REASON_SLOW_SLOT
+
+
+def test_a_zero_share_turns_the_easy_check_off():
+    reach = TargetReach(jobs=16, reached=16, target_milli=TARGET_MILLI)
+    d = _decide(_snapshot({SLOT_NOW: 0.1}), reach=reach, config=StrategyConfig(easy_target_share=0.0))
+    assert d.reason == REASON_SLOW_SLOT
+
+
+def test_the_easy_line_names_the_evidence():
+    reach = TargetReach(jobs=16, reached=12, target_milli=TARGET_MILLI)
+    d = _decide(_snapshot({SLOT_NOW: 0.1}), reach=reach)
+    line = describe_round_decision(7, d, 4_825e6)
+    assert line == "[QPU] gen 7: join (easy-target) | 12 of 16 recent jobs reached the target -4945 | headroom 4825s"
+
+
+def test_the_tracker_judges_recent_jobs_against_the_latest_target():
+    tracker = TargetReachTracker(window_jobs=4, max_age_s=60.0)
+    assert tracker.summary(NOW) is None
+    tracker.observe(NOW - 120, -5_100_000)  # too old to count
+    tracker.observe(NOW - 10, -5_000_000)
+    tracker.observe(NOW - 5, -4_950_000)
+    tracker.observe(NOW - 1, None)  # a job with no energy adds nothing
+    assert tracker.summary(NOW) is None  # no target yet
+    tracker.set_target(-4_960_000)
+    assert tracker.summary(NOW) == TargetReach(jobs=2, reached=1, target_milli=-4_960_000)
+    # The target eased: both recent jobs now reach it.
+    tracker.set_target(-4_940_000)
+    assert tracker.summary(NOW) == TargetReach(jobs=2, reached=2, target_milli=-4_940_000)
+
+
+def test_the_tracker_keeps_only_the_newest_jobs():
+    tracker = TargetReachTracker(window_jobs=2, max_age_s=60.0)
+    tracker.set_target(-4_960_000)
+    for best in (-5_000_000, -4_900_000, -4_900_000):
+        tracker.observe(NOW, best)
+    assert tracker.summary(NOW) == TargetReach(jobs=2, reached=0, target_milli=-4_960_000)
+
+
+class _FixedSnapshots:
+    def __init__(self, snapshot: Snapshot):
+        self._snapshot = snapshot
+
+    def latest(self) -> Snapshot:
+        return self._snapshot
+
+
+def test_the_round_strategy_reads_the_session_tracker():
+    tracker = TargetReachTracker()
+    tracker.set_target(TARGET_MILLI)
+    for _ in range(REACH_MIN_JOBS):
+        tracker.observe(NOW, -5_030_000)
+    snapshots = cast(SnapshotRefresher, _FixedSnapshots(_snapshot({SLOT_NOW: 0.1})))
+    strategy = RoundStrategy(StrategyConfig(participation_chance=0.0), snapshots, reach=tracker)
+    budget = ParticipationDecision(
+        participate=True,
+        headroom_us=HEADROOM_US,
+        allowance_us=0.0,
+        spent_us=0.0,
+        period_start=NOW - 86_400,
+        period_end=PERIOD_END,
+        seconds_until_headroom=0.0,
+        accrual_us_per_s=ACCRUAL_US_PER_S,
+    )
+    assert strategy.decide(NOW, budget).reason == REASON_EASY_TARGET
+    without = RoundStrategy(StrategyConfig(participation_chance=0.0), snapshots)
+    assert without.decide(NOW, budget).reason == REASON_SLOW_SLOT

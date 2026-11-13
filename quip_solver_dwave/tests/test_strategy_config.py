@@ -12,26 +12,34 @@ def test_defaults_keep_todays_behaviour():
     cfg = StrategyConfig()
     assert cfg.min_throughput_advantage == 0.25
     assert cfg.participation_chance == 0.10
+    assert cfg.easy_target_share == 0.5
     assert strategy_config_from_toml("") == cfg
     assert strategy_config_from_toml("budget = 250m") == cfg  # unparsable: the budget parser reports it
 
 
-def test_the_two_keys_are_read():
-    cfg = strategy_config_from_toml("min_throughput_advantage = 1\nparticipation_chance = 0\n")
-    assert cfg == StrategyConfig(min_throughput_advantage=1.0, participation_chance=0.0)
+def test_the_keys_are_read():
+    cfg = strategy_config_from_toml(
+        "min_throughput_advantage = 1\nparticipation_chance = 0\neasy_target_share = 0.75\n"
+    )
+    assert cfg == StrategyConfig(
+        min_throughput_advantage=1.0, participation_chance=0.0, easy_target_share=0.75
+    )
 
 
 def test_nonsense_values_warn_and_fall_back(caplog):
     with caplog.at_level(logging.WARNING):
-        cfg = strategy_config_from_toml("min_throughput_advantage = -1\nparticipation_chance = true\n")
+        cfg = strategy_config_from_toml(
+            "min_throughput_advantage = -1\nparticipation_chance = true\neasy_target_share = 2\n"
+        )
     assert cfg == StrategyConfig()
     messages = [r.getMessage() for r in caplog.records]
     assert any("min_throughput_advantage" in m for m in messages)
     assert any("participation_chance" in m for m in messages)
+    assert any("easy_target_share" in m for m in messages)
 
 
 def test_the_keys_are_known_to_the_dwave_schema(caplog):
-    assert {"min_throughput_advantage", "participation_chance"} <= DWAVE_CONFIG_KEYS
+    assert {"min_throughput_advantage", "participation_chance", "easy_target_share"} <= DWAVE_CONFIG_KEYS
     with caplog.at_level(logging.WARNING):
         warn_unknown_backend_keys("min_throughput_advantage = 0.5\nparticipation_chance = 0.2\n")
     assert not [r for r in caplog.records if "unknown field" in r.getMessage()]
