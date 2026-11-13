@@ -159,7 +159,7 @@ def test_joining_a_qblock_names_the_headroom_and_the_spend(caplog):
 
     caplog.set_level(logging.DEBUG)
     _log_qblock_joined(204, _decision(600.0, spent_s=400.0, allowance_s=1000.0))
-    assert "joining qblock 204" in caplog.text
+    assert "joining gen 204" in caplog.text
     assert "600s of headroom" in caplog.text
     assert "spent 400s of 1000s" in caplog.text
     assert [r.levelname for r in caplog.records] == ["INFO"]
@@ -170,7 +170,7 @@ def test_sitting_out_a_qblock_reports_the_next_window(caplog):
 
     caplog.set_level(logging.DEBUG)
     _log_qblock_sat_out(205, _decision(-300.0, until_s=21_600.0))
-    assert "sitting out qblock 205" in caplog.text
+    assert "sitting out gen 205" in caplog.text
     assert "300s past the budget line" in caplog.text
     assert "next window in 6h 0m" in caplog.text
     assert [r.levelname for r in caplog.records] == ["INFO"]

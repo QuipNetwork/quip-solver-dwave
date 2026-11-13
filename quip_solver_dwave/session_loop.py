@@ -50,7 +50,7 @@ from quip_solver_dwave.config import (
     sampling_defaults_from_toml,
 )
 from quip_solver_dwave.families import accepted_family_support
-from quip_solver_dwave.history import HistoryRecorder, JobSample
+from quip_solver_dwave.history import HistoryRecorder, HistoryStore, JobSample
 from quip_solver_dwave.job import (
     ENCODINGS,
     SolverUnavailable,
@@ -84,6 +84,9 @@ from quip_solver_dwave.profile import SnapshotRefresher
 from quip_solver_dwave.strategy import (
     RoundDecision,
     RoundStrategy,
+    TargetReach,
+    TargetReachTracker,
+    REACH_MAX_AGE_S,
     describe_round_decision,
     strategy_config_from_toml,
 )
@@ -252,6 +255,29 @@ class ParticipationGate:
         return GateResult(
             allowed=allowed, changed=changed, decision=decision, round=verdict
         )
+
+    def on_easy_round(self, now: float) -> Optional[GateResult]:
+        """Join mid-round when the round is easy. None when nothing changes.
+
+        Joining mid-round is wasteful only when the field needs the whole
+        round to find a winner. When recent jobs already reach the target,
+        the first job is likely to win, so waiting for the boundary only
+        hands the round to someone else. The budget still decides first.
+        """
+        if self._participating or self._strategy is None:
+            return None
+        decision = self._pacer.decide(now)
+        if not decision.participate:
+            return None
+        verdict = self._strategy.easy_join(now)
+        if verdict is None:
+            return None
+        self._participating = True
+        return GateResult(allowed=True, changed=True, decision=decision, round=verdict)
+
+    def easy_reach(self, now: float) -> Optional[TargetReach]:
+        """The evidence that the current round is easy, if the strategy has it."""
+        return self._strategy.easy_reach(now) if self._strategy is not None else None
 
     def on_job(self, now: float) -> GateResult:
         """May this job be sampled? Yes while the round is joined and the
@@ -438,7 +464,7 @@ def _connect_solver(sampler, generation: Optional[int]) -> bool:
     except Exception as exc:
         if not is_solver_unavailable(exc):
             raise
-        where = "at Configure" if generation is None else f"sitting out qblock {generation}"
+        where = "at Configure" if generation is None else f"sitting out gen {generation}"
         logger.warning(
             "[QPU] %s: solver offline (%s); the connect is retried once per "
             "qblock boundary and no credits go out until it succeeds",
@@ -450,7 +476,7 @@ def _connect_solver(sampler, generation: Optional[int]) -> bool:
 
 def _log_qblock_joined(generation: int, decision: ParticipationDecision) -> None:
     logger.info(
-        "[QPU] joining qblock %d: %.0fs of headroom on the budget line "
+        "[QPU] joining gen %d: %.0fs of headroom on the budget line "
         "(spent %.0fs of %.0fs earned so far)",
         generation,
         decision.headroom_us / 1_000_000,
@@ -467,7 +493,7 @@ def _log_qblock_sat_out(generation: int, decision: ParticipationDecision) -> Non
     buries the session log without adding anything this line did not say.
     """
     logger.info(
-        "[QPU] sitting out qblock %d: %.0fs past the budget line, next window "
+        "[QPU] sitting out gen %d: %.0fs past the budget line, next window "
         "in %s",
         generation,
         -decision.headroom_us / 1_000_000,
@@ -489,7 +515,9 @@ def _utc_day(ts: float) -> str:
     return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
 
 
-def _log_budget_configured(pacer: BudgetPacer, now: float) -> None:
+def _log_budget_configured(
+    pacer: BudgetPacer, now: float, easy: Optional[TargetReach] = None
+) -> None:
     """State the quota, then say plainly why the QPU is not mining yet.
 
     A budgeted miner is idle between Configure and the next qblock boundary,
@@ -509,7 +537,15 @@ def _log_budget_configured(pacer: BudgetPacer, now: float) -> None:
         stats["allowance_seconds"],
         stats["jobs_this_period"],
     )
-    if stats["headroom_seconds"] > 0:
+    if stats["headroom_seconds"] > 0 and easy is not None:
+        logger.info(
+            "[QPU] easy rounds: %d of %d recent jobs reached the target %.0f; "
+            "joining as soon as the coordinator sends the round target",
+            easy.reached,
+            easy.jobs,
+            easy.target_milli / 1000,
+        )
+    elif stats["headroom_seconds"] > 0:
         logger.info(
             "[QPU] waiting: %.0fs of headroom is available, but credits are "
             "held until the next qblock boundary so the QPU joins a whole "
@@ -526,8 +562,45 @@ def _log_budget_configured(pacer: BudgetPacer, now: float) -> None:
         )
 
 
+def _join_easy_round(
+    gate: ParticipationGate,
+    state_lock: threading.Lock,
+    out_q: "queue.Queue[miner_pb2.MinerMsg]",
+    generation: int,
+    queue_depth: int,
+) -> None:
+    """Grant credits now when a new round target makes the round easy."""
+    with state_lock:
+        joined = gate.on_easy_round(time.time())
+    if joined is None or joined.round is None:
+        return
+    logger.info(
+        "%s (mid-round)",
+        describe_round_decision(generation, joined.round, joined.decision.headroom_us),
+    )
+    out_q.put(miner_pb2.MinerMsg(job_request=miner_pb2.JobRequest(credits=queue_depth)))
+
+
+def _seed_reach(reach: TargetReachTracker, store: HistoryStore, now: float) -> None:
+    """Prime the easy-round evidence with the rounds mined in the last hour."""
+    rows = store.rounds(since_ts=now - REACH_MAX_AGE_S)
+    reach.seed(
+        (
+            float(r["end_ts_s"] if r["end_ts_s"] is not None else r["start_ts_s"]),
+            int(r["best_energy_milli"]),
+            r["target_milli"],
+        )
+        # rounds() is newest first; the tracker keeps the newest entries.
+        for r in reversed(rows)
+        if r["jobs"] > 0 and r["best_energy_milli"] is not None
+    )
+
+
 def _attach_round_strategy(
-    gate: ParticipationGate, refresher: SnapshotRefresher, backend_toml: str
+    gate: ParticipationGate,
+    refresher: SnapshotRefresher,
+    backend_toml: str,
+    reach: TargetReachTracker,
 ) -> None:
     """Give the gate a strategy once both a budget and history exist.
 
@@ -537,12 +610,13 @@ def _attach_round_strategy(
     attached.
     """
     config = strategy_config_from_toml(backend_toml)
-    gate.use_strategy(RoundStrategy(config, refresher))
+    gate.use_strategy(RoundStrategy(config, refresher, reach=reach))
     logger.info(
         "[QPU] round strategy attached: min_throughput_advantage=%.2f "
-        "participation_chance=%.2f",
+        "participation_chance=%.2f easy_target_share=%.2f",
         config.min_throughput_advantage,
         config.participation_chance,
+        config.easy_target_share,
     )
 
 
@@ -808,6 +882,9 @@ def run_session(
     # The cached Topology as a lease snapshots it at admission.
     lease_topology: Optional[LeaseTopology] = None
     session_target: Optional[miner_pb2.SetTarget] = None
+    # Recent job energies against the target: an easy round is joined in
+    # any slot.
+    reach = TargetReachTracker()
     session_sweeps: int = DEFAULT_NUM_SWEEPS
     session_defaults = SamplingDefaults()
     pending_budget = budget
@@ -962,6 +1039,7 @@ def run_session(
                     (s.energy_milli for s in reply.result.solutions),
                     default=None,
                 )
+                reach.observe(time.time(), job_best)
                 if s_target is not None:
                     valid = sum(
                         1
@@ -1136,6 +1214,10 @@ def run_session(
                     result.device_access_time_us, time.time()
                 )
             spins = ordered_spins(problem.nodes, result)
+            energies = problem.energies_milli(spins)
+            reach.observe(
+                time.time(), int(energies.min()) if energies.size else None
+            )
             with state_lock:
                 wasted = _is_abandoned(admitted.generation, cancel_watermark)
             if wasted:
@@ -1144,7 +1226,6 @@ def run_session(
                 if wasted:
                     recorder.record_wasted(time.time())
                 else:
-                    energies = problem.energies_milli(spins)
                     target = (
                         s_target.max_energy_milli if s_target is not None else None
                     )
@@ -1426,7 +1507,7 @@ def run_session(
                         # from an earlier Configure that named no budget.
                         if refresher is not None:
                             _attach_round_strategy(
-                                gate, refresher, cm.configure.backend_toml
+                                gate, refresher, cm.configure.backend_toml, reach
                             )
                 try:
                     pp_config = postprocess_config_from_toml(cm.configure.backend_toml)
@@ -1480,6 +1561,7 @@ def run_session(
                 # Local binding so the None check narrows: pending_budget is
                 # captured by process_job, which blocks narrowing on it.
                 pacer = pending_budget
+                log_budget: Optional[BudgetPacer] = None
                 if solver_down:
                     # Nothing to dispatch against until the connect succeeds;
                     # the boundary that reconnects grants the depth.
@@ -1494,8 +1576,9 @@ def run_session(
                     # Ready says the session is established; credits say the QPU
                     # is participating. They are deliberately not the same
                     # message. A budgeted miner grants nothing until a qblock
-                    # boundary gives it a whole round to decide about.
-                    _log_budget_configured(pacer, time.time())
+                    # boundary gives it a whole round to decide about, or
+                    # until the round target shows the round is easy.
+                    log_budget = pacer
                 if recorder is None:
                     history_path = usage_db_from_backend_toml(cm.configure.backend_toml)
                     recorder = HistoryRecorder.open(history_path)
@@ -1505,7 +1588,7 @@ def run_session(
                         refresher.start()
                         if gate is not None:
                             _attach_round_strategy(
-                                gate, refresher, cm.configure.backend_toml
+                                gate, refresher, cm.configure.backend_toml, reach
                             )
                         # Past rounds come from the coordinator's attempts
                         # files, hundreds of megabytes on a long-lived node:
@@ -1521,6 +1604,11 @@ def run_session(
                             daemon=True,
                         )
                         seed_thread.start()
+                        _seed_reach(reach, recorder.store, time.time())
+                if log_budget is not None:
+                    now = time.time()
+                    easy = gate.easy_reach(now) if gate is not None else None
+                    _log_budget_configured(log_budget, now, easy)
             elif which == "topology":
                 topo = cm.topology
                 session_nodes = list(topo.nodes)
@@ -1533,8 +1621,13 @@ def run_session(
                 lease_topology = LeaseTopology.from_proto(topo)
             elif which == "set_target":
                 session_target = cm.set_target
+                reach.set_target(cm.set_target.max_energy_milli)
                 if recorder is not None:
                     recorder.round_target(cm.set_target.max_energy_milli)
+                if gate is not None and not solver_down:
+                    _join_easy_round(
+                        gate, state_lock, out_q, cancel_watermark + 1, queue_depth
+                    )
             elif which == "job":
                 with state_lock:
                     cancelled = _is_abandoned(cm.job.generation, cancel_watermark)
@@ -1680,7 +1773,7 @@ def run_session(
                         if session_nodes:
                             sampler.set_session_topology(session_nodes, session_edges)
                         logger.info(
-                            "[QPU] qblock %d: solver back, connected",
+                            "[QPU] gen %d: solver back, connected",
                             cm.cancel.max_generation,
                         )
                 boundary = None
@@ -1740,7 +1833,7 @@ def run_session(
                     mining = gate is None or gate.participating
                     if mining and not regranted:
                         logger.info(
-                            "[QPU] qblock %d: granting %d credit(s) to probe "
+                            "[QPU] gen %d: granting %d credit(s) to probe "
                             "the solver",
                             cm.cancel.max_generation,
                             owed,

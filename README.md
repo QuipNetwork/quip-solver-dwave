@@ -279,17 +279,30 @@ down until their cost exhausts the funds, and calls that slot's jobs the
 bar. It joins when this round's jobs clear the bar, within a tolerance. The
 verdict and its numbers are one log line per boundary.
 
-Two `[dwave]` keys tune it. The defaults change nothing until history
+The miner joins an easy round in any slot. It keeps the best energy of its
+last 16 QPU jobs from the past hour and compares each with the latest round
+target. A round is easy when at least 4 such jobs exist and half of them
+reach the target. In an easy round, one job is likely to win.
+
+The miner does not wait for a boundary to join an easy round. It checks the
+evidence each time a round target arrives. If the round is easy, it grants
+credits and mines the round in progress. After a restart, the rounds mined
+in the last hour supply the evidence. The budget still decides first, so an
+easy round never spends past the allotment.
+
+Three `[dwave]` keys tune it. The defaults change nothing until history
 exists.
 
 ```toml
 min_throughput_advantage = 0.25  # skip a round only when the bar sits more than 25% above its jobs
 participation_chance = 0.10      # join this share of rounds regardless, so every slot keeps getting measured
+easy_target_share = 0.5          # join in any slot when this share of recent jobs reaches the target; 0 turns it off
 ```
 
 The `reason` column in `--profile` and the strategy's log line name the verdict with one of these strings:
 
 - `no-data`: no history yet, so every round the budget allows is joined.
+- `easy-target`: enough recent jobs reach the target, so the miner joins the round in any slot.
 - `explore`: the participation chance drew this round regardless of the verdict below.
 - `saturated`: the funds cover every round left in the period, so the round is joined.
 - `fast-slot`: this round clears the bar, so it is joined.
