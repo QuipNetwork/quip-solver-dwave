@@ -288,10 +288,9 @@ that a Rust solver prints (`capabilities_json_from` in `session.rs`).
 `leases.py` admits a lease and builds the problem of each salt. The session
 loop runs each admitted lease on its own thread. The wheel draws every
 problem: `lease.draw` for `BLAKE3_CHACHA8_V1`, and `families.generate` for
-`FAMILY_CHACHA8_V1`. `GENERATED_FAMILIES` lists the one generated revision,
-`quip/twisted-ice-dimer` revision 1. Add a revision only after the tests in
-`test_family_leases.py` and the `--family` gate in `test_conformance.py` cover
-it.
+`FAMILY_CHACHA8_V1`. `GENERATED_FAMILIES` is every revision the wheel's registry
+implements (`families.supported()`), so the QPU mines any registered family.
+The `--family` gate in `test_conformance.py` drives each one.
 
 - **Admission** follows "Generated jobs" in `SPEC.md` and FAM-47. The wheel's
   `families.admit` checks the descriptor against every family in the wheel, so

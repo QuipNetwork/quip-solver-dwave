@@ -57,11 +57,11 @@ FAMILY = miner_pb2.GENERATOR_ALGORITHM_FAMILY_CHACHA8_V1
 #: ``LeaseDone.best_energy_milli`` when no read finished: ``i64::MAX``.
 NO_ENERGY = 2**63 - 1
 
-#: The family revisions this miner generates, as ``(family_id, revision)``.
-#: Only revisions that ``test_family_leases`` and the conformance ``--family``
-#: gate cover belong here. The twisted-ice dimer cells are the family the QPU
-#: research targets.
-GENERATED_FAMILIES: Tuple[Tuple[str, int], ...] = (("quip/twisted-ice-dimer", 1),)
+#: The family revisions this miner generates, as ``(family_id, revision)``:
+#: every revision the wheel's registry implements, in registry order. The wheel
+#: draws each instance, so a lease of any registered family runs on the QPU,
+#: and the conformance ``--family`` gate covers each one.
+GENERATED_FAMILIES: Tuple[Tuple[str, int], ...] = tuple(families.supported())
 
 #: How often a lease thread checks for a stop while it waits.
 TICK_S = 0.05

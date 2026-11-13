@@ -15,7 +15,7 @@ from quip_solver_dwave.session_loop import (
     log_attempt,
     log_progress,
 )
-from quip_solver_core import miner_pb2
+from quip_solver_core import families, miner_pb2
 
 from quip_solver_dwave import FEATURES, MAX_EDGES, MAX_NODES
 
@@ -60,14 +60,14 @@ def test_capabilities_message_matches_advertised_caps():
         miner_pb2.COEFFICIENT_ENCODING_F32,
         miner_pb2.COEFFICIENT_ENCODING_F64,
     ]
-    # Both generators, because one family is generated (FAM-58), and the one
-    # revision the lease tests and the --family gate cover.
+    # Both generators, because families are generated (FAM-58), and every
+    # revision the wheel's registry implements.
     assert list(caps.generators) == [
         miner_pb2.GENERATOR_ALGORITHM_BLAKE3_CHACHA8_V1,
         miner_pb2.GENERATOR_ALGORITHM_FAMILY_CHACHA8_V1,
     ]
     assert [(f.family_id, list(f.revisions), list(f.params_digests)) for f in caps.generated_families] == [
-        ("quip/twisted-ice-dimer", [1], [])
+        (family_id, [revision], []) for family_id, revision in families.supported()
     ]
     # Explicit jobs of the same revision, advertised apart from generation.
     assert [(f.family_id, list(f.revisions), list(f.params_digests)) for f in caps.accepted_families] == [
