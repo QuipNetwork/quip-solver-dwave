@@ -316,11 +316,13 @@ The `--family` gate in `test_conformance.py` drives each one.
   `grace_ms - min(grace_ms / 4, 250)`. A stream that closes abandons the
   lease, with no `LeaseDone`. A lease that arrives after a `Cancel` covers its
   generation gets a `LeaseDone` with zero salts.
-- **Postprocess.** A `[postprocess]` table in `backend_toml` sends the reads
-  of a family salt to the policy of its family (`postprocess.py`). The
-  `qpp-race768/1` policy runs on the twisted-ice dimer salts. The salt frees
-  its QPU slot first, and its host work runs on the executor of the
-  postprocessor. Each trial keeps its raw reads on disk.
+- **Postprocess.** The reads of a family salt go to the policy of its family
+  (`postprocess.py`). By default the `qpp-race2048-repair32/1` policy runs on
+  the twisted-ice dimer salts and no trial record is written. A
+  `[postprocess]` table in `backend_toml` replaces the default, and
+  `postprocess = false` turns it off. The salt frees its QPU slot first, and
+  its host work runs on the executor of the postprocessor. A configured
+  trial keeps its raw reads on disk.
   [docs/family-postprocess.md](docs/family-postprocess.md) gives the rules.
 - **Refunds.** The refund follows the same rules as the refill of a plain
   job. If the solver goes offline during the lease, the session parks the
@@ -442,6 +444,12 @@ and a change to any of them moves the trajectory:
   to left, so the `neg` index takes the first draw.
 - The race sorts its population with the unstable `std::sort`, so
   `cxxsort.rs` ports the libstdc++ introsort to keep the same tied states.
+
+`repair_depth=D` is not in the prototype. After the mode ends, `repair.rs`
+runs a defect repair on its best state: a zero-temperature search for chains
+of up to `D` flips, where each flip after the first repairs a pair or a tile
+that the chain broke. The repair draws no random number, and the JSON gains
+a `repair` object. Without the option the output is the prototype's.
 
 Build with `cargo build --manifest-path crates/qpp/Cargo.toml --release`.
 `qpp.find_binary` looks at `$QUIP_DWAVE_QPP`, then `PATH`, then that build.

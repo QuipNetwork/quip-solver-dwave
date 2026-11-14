@@ -138,3 +138,42 @@ def test_a_failed_run_raises_with_the_binary_message(tmp_path):
     model = _model()
     with pytest.raises(qpp.QppError, match="seed_index"):
         qpp.run(model, _states(model, 2), "chain", workdir=tmp_path, seed_index=5)
+
+
+@binary
+def test_the_repair_leaves_no_improving_flip_and_reports_its_gain(tmp_path):
+    model = _model(tiles=12)
+    seeds = _states(model, 1)
+    plain = qpp.run(model, seeds, "chain", workdir=tmp_path, sweeps=0)
+    result = qpp.run(model, seeds, "chain", workdir=tmp_path, sweeps=0, repair_depth=8)
+    stats = result.extra["repair"]
+    assert result.best_milli == plain.best_milli - stats["gain"]
+    assert stats["gain"] >= 0 and stats["flips"] >= stats["moves"] >= stats["rounds"] >= 0
+    # A chain of one flip is a move, so no single flip can lower the result.
+    s = result.state.astype(np.int64)
+    field = np.zeros(model.n, dtype=np.int64)
+    for (u, v), j in zip(model.edges.tolist(), model.j_milli.tolist()):
+        field[u] += j * s[v]
+        field[v] += j * s[u]
+    assert (-2 * s * field >= 0).all()
+    again = qpp.run(model, seeds, "chain", workdir=tmp_path, sweeps=0, repair_depth=8)
+    assert (again.state == result.state).all()
+
+
+@binary
+@pytest.mark.parametrize(
+    ("params", "match"),
+    [({"repair_depth": 33}, "repair_depth"), ({"repair_depth": 8, "repair_budget": 0}, "repair_budget")],
+)
+def test_a_bad_repair_option_is_refused(tmp_path, params, match):
+    model = _model()
+    with pytest.raises(qpp.QppError, match=match):
+        qpp.run(model, _states(model, 1), "chain", workdir=tmp_path, sweeps=0, **params)
+
+
+@binary
+def test_the_repair_does_not_run_with_a_mask(tmp_path):
+    model = _model()
+    mask = np.ones(model.n, dtype=bool)
+    with pytest.raises(qpp.QppError, match="mask"):
+        qpp.run(model, _states(model, 1), "chain", workdir=tmp_path, mask=mask, sweeps=0, repair_depth=8)

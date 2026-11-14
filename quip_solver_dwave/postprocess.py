@@ -12,7 +12,11 @@ Nothing here touches billing. The session bills a salt's QPU access when the
 sampler returns, before the postprocess starts. Processor startup and wall
 time go only to the trial record, never to the quota ledger.
 
-The postprocess runs only when ``Configure.backend_toml`` asks for it::
+The postprocess runs by default. Without a ``[postprocess]`` table in
+``Configure.backend_toml``, each family in :data:`DEFAULT_POLICIES` gets its
+policy, no trial record is written, and a host without the processor binary
+reports raw reads alone. ``postprocess = false`` turns the postprocess off.
+A table replaces the default::
 
     [postprocess]
     records = "/var/lib/quip/postprocess"   # required
@@ -23,10 +27,13 @@ A family the table does not name is not postprocessed. A named family with
 an unknown policy, a missing ``records``, or a processor binary that cannot
 be found makes the configuration invalid.
 
-The one policy is ``qpp-race768/1``: the read race of the 2026-11-11 study
+``qpp-race768/1`` is the read race of the 2026-11-11 study
 (``~/quip-data/regimes/qpu-aware-pp-20261111``) at 768 sweeps, stages
-``4:64,1:512`` with beta 6 to 20, every raw read in the population. It runs in
-``quip-dwave-qpp`` (``crates/qpp``) through :mod:`quip_solver_dwave.qpp`.
+``4:64,1:512`` with beta 6 to 20, every raw read in the population.
+``qpp-race2048-repair32/1``, the default, is the race at 2,048 sweeps, stages
+``8:64,2:256,1:1024``, then the defect repair on its best state with chains of
+up to 32 flips. Both run in ``quip-dwave-qpp`` (``crates/qpp``) through
+:mod:`quip_solver_dwave.qpp`.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import struct
 import threading
 import time
@@ -79,34 +87,69 @@ POLICIES: Dict[str, Policy] = {
         mode="race",
         params={"stages": "4:64,1:512", "b0": 6, "b1": 20, "single_every": 4},
     ),
+    "qpp-race2048-repair32/1": Policy(
+        name="qpp-race2048-repair32/1",
+        family_id=TWISTED_DIMER,
+        mode="race",
+        params={
+            "stages": "8:64,2:256,1:1024",
+            "b0": 6,
+            "b1": 20,
+            "single_every": 4,
+            "repair_depth": 32,
+        },
+    ),
 }
+
+#: The policy of each family when ``backend_toml`` has no ``[postprocess]``.
+DEFAULT_POLICIES: Dict[str, Policy] = {
+    TWISTED_DIMER: POLICIES["qpp-race2048-repair32/1"],
+}
+
+#: Most processors at once under the default configuration.
+DEFAULT_MAX_THREADS = 4
 
 
 @dataclass(frozen=True)
 class PostprocessConfig:
-    records: Path
+    #: Directory of the trial records, or ``None`` to write none.
+    records: Optional[Path]
     threads: int
     #: Policy of each family that is postprocessed.
     policies: Dict[str, Policy]
+    #: ``True`` when a ``[postprocess]`` table asked for this configuration.
+    explicit: bool = True
+
+
+def default_postprocess_config() -> PostprocessConfig:
+    """The default policies, no trial records, and all processors but one."""
+    threads = min(DEFAULT_MAX_THREADS, max(1, (os.cpu_count() or 2) - 1))
+    return PostprocessConfig(
+        records=None, threads=threads, policies=dict(DEFAULT_POLICIES), explicit=False
+    )
 
 
 def postprocess_config_from_toml(toml_text: str) -> Optional[PostprocessConfig]:
-    """The ``[postprocess]`` table, or ``None`` when the document has none.
+    """The ``[postprocess]`` table, or the default when the document has none.
+
+    ``postprocess = false`` gives ``None``: no postprocess.
 
     Raises:
         PostprocessConfigInvalid: The table is present but not usable.
     """
     if not toml_text or not toml_text.strip():
-        return None
+        return default_postprocess_config()
     try:
         data = tomllib.loads(toml_text)
     except tomllib.TOMLDecodeError:
-        return None
+        return default_postprocess_config()
     table = data.get("postprocess")
     if table is None:
+        return default_postprocess_config()
+    if table is False:
         return None
     if not isinstance(table, dict):
-        raise PostprocessConfigInvalid("postprocess must be a table")
+        raise PostprocessConfigInvalid("postprocess must be a table or false")
     records = table.get("records")
     if not isinstance(records, str) or not records:
         raise PostprocessConfigInvalid("postprocess.records must name a directory")
@@ -290,7 +333,7 @@ class Postprocessor:
         self.config = config
         self.binary = exe
         self.identity = processor_identity(exe)
-        self.store = TrialStore(config.records)
+        self.store = TrialStore(config.records) if config.records is not None else None
         # The host work of every salt runs here, ``threads`` at a time, off
         # the job pool whose workers stand for QPU submissions.
         self.executor = ThreadPoolExecutor(
@@ -340,7 +383,8 @@ class Postprocessor:
             raw_energies=np.asarray(raw_energies, dtype=np.int64),
         )
         # Raw evidence first, so a crash or a kill below still leaves it.
-        self.store.write(trial)
+        if self.store is not None:
+            self.store.write(trial)
         try:
             if trial.raw_spins.shape[0] == 0:
                 raise ValueError("no raw reads to postprocess")
@@ -374,6 +418,7 @@ class Postprocessor:
             trial.final_spins = result.state[None].astype(np.int8)
             trial.final_energies = np.array([result.best_milli], dtype=np.int64)
             trial.processor_cpu_s = result.cpu_s
-        self.store.finish(trial)
+        if self.store is not None:
+            self.store.finish(trial)
         return trial
 

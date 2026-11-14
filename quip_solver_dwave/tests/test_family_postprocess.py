@@ -87,9 +87,18 @@ def config_toml(records: Path, policy: str = "qpp-race768/1", **extra) -> str:
 # -- configuration -------------------------------------------------------------
 
 
-def test_no_table_means_no_postprocess():
-    assert postprocess_config_from_toml("") is None
-    assert postprocess_config_from_toml('budget = "30s"\n') is None
+@pytest.mark.parametrize("text", ["", 'budget = "30s"\n'])
+def test_no_table_means_the_default_postprocess(text):
+    config = postprocess_config_from_toml(text)
+    assert config is not None and not config.explicit
+    assert config.records is None and 1 <= config.threads <= postprocess.DEFAULT_MAX_THREADS
+    policy = config.policies["quip/twisted-ice-dimer"]
+    assert policy.name == "qpp-race2048-repair32/1"
+    assert policy.params["stages"] == "8:64,2:256,1:1024" and policy.params["repair_depth"] == 32
+
+
+def test_false_turns_the_postprocess_off():
+    assert postprocess_config_from_toml("postprocess = false\n") is None
 
 
 def test_the_table_names_its_records_threads_and_policies(tmp_path):
@@ -188,6 +197,7 @@ def _reads(problem, k: int = 4) -> np.ndarray:
 
 
 def _record(processor: Postprocessor, trial):
+    assert processor.store is not None
     with np.load(processor.store.path(trial)) as z:
         return {k: z[k] for k in z.files}
 
@@ -212,6 +222,18 @@ def test_a_successful_trial_keeps_every_raw_read_and_the_final_state(tmp_path, f
     assert summary["outcome"] == OK and summary["policy"] == "qpp-race768/1"
     line = json.loads((tmp_path / "records" / "trials.jsonl").read_text().splitlines()[-1])
     assert line == summary
+
+
+def test_the_default_postprocess_writes_no_record(tmp_path, fake_qpp):
+    config = postprocess_config_from_toml("")
+    assert config is not None
+    processor = Postprocessor(config)
+    problem = _salt()
+    trial = _run(processor, problem, _reads(problem))
+    assert trial.outcome == OK and trial.policy == "qpp-race2048-repair32/1"
+    assert trial.final_spins.shape == (1, len(problem.nodes))
+    assert processor.store is None
+    assert [p.name for p in tmp_path.iterdir()] == [fake_qpp.name]
 
 
 def test_the_policy_options_reach_the_processor(tmp_path, fake_qpp, monkeypatch):
@@ -278,10 +300,11 @@ def test_a_stop_before_the_start_never_runs_the_processor(tmp_path, fake_qpp, mo
     os.environ.get(qpp.BINARY_ENV) is None and qpp.find_binary() is None,
     reason="quip-dwave-qpp is not built",
 )
-def test_the_real_race_lowers_the_best_raw_read(tmp_path, monkeypatch):
+@pytest.mark.parametrize("policy", sorted(postprocess.POLICIES))
+def test_the_real_processor_lowers_the_best_raw_read(tmp_path, policy):
     real = qpp.find_binary()
     assert real is not None and real.is_file()
-    config = postprocess_config_from_toml(config_toml(tmp_path))
+    config = postprocess_config_from_toml(config_toml(tmp_path, policy))
     assert config is not None
     problem = _salt()
     reads = _reads(problem, 8)
@@ -377,6 +400,20 @@ def test_an_invalid_table_ends_the_session_at_configure(monkeypatch, tmp_path):
     kinds = coord.kinds()
     assert "fatal" in kinds and "ready" not in kinds
 
+
+
+def test_the_default_without_its_processor_reports_raw_reads(monkeypatch, tmp_path):
+    monkeypatch.setenv(qpp.BINARY_ENV, str(tmp_path / "absent"))
+    coord = Coordinator(monkeypatch, FakeDevice())
+    topo = zephyr_topology()
+    coord.start(topo, target(), depth=2, toml="")
+    coord.send(job=lease_job(family_generator(topo, count=1)))
+    coord.wait_for(has_done())
+    sent = coord.finish()
+    assert "fatal" not in [m.WhichOneof("msg") for m in sent]
+    results, _ = lease_messages(sent)
+    # The two raw reads of the salt, and no final state ahead of them.
+    assert len(results) == 1 and len(results[0].solutions) == 2
 
 
 def test_the_postprocess_does_not_hold_the_qpu_slot(monkeypatch, tmp_path, fake_qpp):
