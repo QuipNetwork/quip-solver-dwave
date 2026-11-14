@@ -78,7 +78,9 @@ from quip_solver_dwave.postprocess import (
     PostprocessConfig,
     PostprocessConfigInvalid,
     Postprocessor,
+    TrialStore,
     postprocess_config_from_toml,
+    records_config_from_toml,
 )
 from quip_solver_dwave.schedule import ScheduleError
 from quip_solver_dwave.profile import SnapshotRefresher
@@ -935,6 +937,8 @@ def run_session(
     leases_aborted = threading.Event()
     # The family postprocess: the default, or the one backend_toml configures.
     postprocessor: Optional[Postprocessor] = None
+    # The record of every salt's reads, postprocessed or not.
+    read_store: Optional[TrialStore] = None
 
     def process_job(job, s_nodes, s_edges, s_hash, s_target, s_sweeps, s_defaults):
         # Runs on a pool thread: sample (blocking on the QPU), then enqueue
@@ -942,8 +946,9 @@ def run_session(
         nonlocal jobs_done, best_energy_milli, parked_credits
         started = time.monotonic()
         processor = postprocessor
+        store = read_store
         explicit_postprocess: Optional[Callable[..., Any]] = None
-        if processor is not None:
+        if processor is not None or store is not None:
 
             def stopped() -> bool:
                 return leases_aborted.is_set() or _is_abandoned(
@@ -953,7 +958,28 @@ def run_session(
             def postprocess_job(bound, spins):
                 # An explicit family job holds its credit until this returns:
                 # the Result, with the final state, goes out after it.
-                if processor.policy_for(bound.family_id) is None:
+                raw_energies = bound.energies_milli(spins)
+                target = s_target.max_energy_milli if s_target is not None else None
+                gate = (
+                    processor.gates.get(bound.family_id)
+                    if processor is not None
+                    else None
+                )
+                if (
+                    processor is None
+                    or gate is None
+                    or not gate.admits(int(raw_energies.min()), target)
+                ):
+                    if store is not None:
+                        store.record_raw(
+                            job_id=bytes(job.job_id),
+                            salt_index=None,
+                            family_id=bound.family_id,
+                            nonce=bound.nonce,
+                            raw_spins=spins,
+                            raw_energies=raw_energies,
+                            target_milli=target,
+                        )
                     return None
                 trial = processor.run(
                     job_id=bytes(job.job_id),
@@ -966,8 +992,9 @@ def run_session(
                     j_milli=bound.j_milli,
                     metadata=bound.metadata,
                     raw_spins=spins,
-                    raw_energies=bound.energies_milli(spins),
+                    raw_energies=raw_energies,
                     stop=stopped,
+                    target_milli=target,
                 )
                 return trial.final_spins if trial.outcome == TRIAL_OK else None
 
@@ -1291,10 +1318,37 @@ def run_session(
                 jobs_done += 1
 
         family_id = admitted.family.family_id if admitted.family is not None else None
+        lease_target = s_target.max_energy_milli if s_target is not None else None
         processor = postprocessor
+        store = read_store
+        record: Optional[Callable[..., None]] = None
+        if store is not None:
+
+            def record_salt(problem, spins):
+                store.record_raw(
+                    job_id=admitted.job_id,
+                    salt_index=problem.index,
+                    family_id=family_id or "",
+                    nonce=problem.nonce,
+                    raw_spins=spins,
+                    raw_energies=problem.energies_milli(spins),
+                    target_milli=lease_target,
+                )
+
+            record = record_salt
+
         postprocess: Optional[Callable[..., Any]] = None
+        in_reach: Optional[Callable[..., bool]] = None
         if processor is not None and processor.policy_for(family_id) is not None:
             assert family_id is not None
+            reach_gate = processor.gates[family_id]
+
+            def salt_in_reach(problem, spins):
+                return reach_gate.admits(
+                    int(problem.energies_milli(spins).min()), lease_target
+                )
+
+            in_reach = salt_in_reach
 
             def postprocess_salt(problem, spins, stop):
                 # Runs after the salt is billed and its QPU slot is free.
@@ -1313,6 +1367,7 @@ def run_session(
                     raw_spins=spins,
                     raw_energies=problem.energies_milli(spins),
                     stop=stop,
+                    target_milli=lease_target,
                 )
                 return trial.final_spins if trial.outcome == TRIAL_OK else None
 
@@ -1328,6 +1383,8 @@ def run_session(
             refund=refund,
             sampled=sampled,
             postprocess=postprocess,
+            in_reach=in_reach,
+            record=record,
         )
 
     def lease_main(job, s_topology, s_target, s_sweeps, s_defaults, slots) -> None:
@@ -1515,17 +1572,28 @@ def run_session(
                             _attach_round_strategy(
                                 gate, refresher, cm.configure.backend_toml, reach
                             )
+                try:
+                    records = records_config_from_toml(cm.configure.backend_toml)
+                    read_store = TrialStore(records.root, records.max_bytes)
+                    logger.info(
+                        "[QPU] read records in %s, at most %.1f GB",
+                        records.root,
+                        records.max_bytes / 1e9,
+                    )
+                except (PostprocessConfigInvalid, OSError) as exc:
+                    # Mining goes on without the records: they are evidence,
+                    # not part of a result.
+                    logger.warning("[QPU] no read records: %s", exc)
                 pp_config: Optional[PostprocessConfig] = None
                 try:
                     pp_config = postprocess_config_from_toml(cm.configure.backend_toml)
                     if pp_config is not None:
-                        postprocessor = Postprocessor(pp_config)
+                        postprocessor = Postprocessor(pp_config, store=read_store)
                         logger.info(
-                            "[QPU] postprocess: %s, records in %s, %d at once (%s)",
+                            "[QPU] postprocess: %s, %d at once (%s)",
                             ", ".join(
                                 f"{fid} -> {p.name}" for fid, p in pp_config.policies.items()
                             ),
-                            pp_config.records,
                             pp_config.threads,
                             postprocessor.identity,
                         )

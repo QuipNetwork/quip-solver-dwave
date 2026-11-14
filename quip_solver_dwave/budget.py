@@ -71,6 +71,7 @@ DWAVE_CONFIG_KEYS = frozenset(
         "participation_chance",
         "easy_target_share",
         "postprocess",
+        "records_max_gb",
     }
 )
 

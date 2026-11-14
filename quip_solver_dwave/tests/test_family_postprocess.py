@@ -92,7 +92,7 @@ def config_toml(records: Path, policy: str = "qpp-race768/1", **extra) -> str:
 def test_no_table_means_the_default_postprocess(text):
     config = postprocess_config_from_toml(text)
     assert config is not None and not config.explicit
-    assert config.records is None and 1 <= config.threads <= postprocess.DEFAULT_MAX_THREADS
+    assert 1 <= config.threads <= postprocess.DEFAULT_MAX_THREADS
     policy = config.policies["quip/twisted-ice-dimer"]
     assert policy.name == "qpp-race2048-repair32/1"
     assert policy.params["stages"] == "8:64,2:256,1:1024" and policy.params["repair_depth"] == 32
@@ -148,7 +148,8 @@ def test_false_turns_the_postprocess_off():
 def test_the_table_names_its_records_threads_and_policies(tmp_path):
     config = postprocess_config_from_toml(config_toml(tmp_path, threads=2))
     assert config is not None
-    assert config.records == tmp_path and config.threads == 2
+    assert config.threads == 2
+    assert postprocess.records_config_from_toml(config_toml(tmp_path)).root == tmp_path
     assert config.policies["quip/twisted-ice-dimer"].name == "qpp-race768/1"
     race = config.policies["quip/twisted-ice-dimer"]
     assert race.mode == "race" and race.params["stages"] == "4:64,1:512"
@@ -157,7 +158,7 @@ def test_the_table_names_its_records_threads_and_policies(tmp_path):
 @pytest.mark.parametrize(
     "text",
     [
-        '[postprocess]\n"quip/twisted-ice-dimer" = "qpp-race768/1"\n',
+        '[postprocess]\nrecords = 3\n"quip/twisted-ice-dimer" = "qpp-race768/1"\n',
         '[postprocess]\nrecords = "/x"\n',
         '[postprocess]\nrecords = "/x"\n"quip/twisted-ice-dimer" = "greedy"\n',
         '[postprocess]\nrecords = "/x"\n"quip/charged-ice" = "qpp-race768/1"\n',
@@ -240,6 +241,18 @@ def _reads(problem, k: int = 4) -> np.ndarray:
     return np.random.default_rng(3).choice(np.array([-1, 1], dtype=np.int8), (k, len(problem.nodes)))
 
 
+def _store(tmp_path) -> postprocess.TrialStore:
+    return postprocess.TrialStore(tmp_path / "records")
+
+
+def _trial_lines(records) -> List[str]:
+    return [
+        line
+        for f in sorted(records.glob("*/trials.jsonl"))
+        for line in f.read_text().splitlines()
+    ]
+
+
 def _record(processor: Postprocessor, trial):
     assert processor.store is not None
     with np.load(processor.store.path(trial)) as z:
@@ -249,7 +262,7 @@ def _record(processor: Postprocessor, trial):
 def test_a_successful_trial_keeps_every_raw_read_and_the_final_state(tmp_path, fake_qpp):
     config = postprocess_config_from_toml(config_toml(tmp_path / "records"))
     assert config is not None
-    processor = Postprocessor(config)
+    processor = Postprocessor(config, store=_store(tmp_path))
     problem = _salt()
     reads = _reads(problem)
     trial = _run(processor, problem, reads)
@@ -264,11 +277,12 @@ def test_a_successful_trial_keeps_every_raw_read_and_the_final_state(tmp_path, f
     assert rec["final_energies"].tolist() == problem.energies_milli(rec["final_spins"]).tolist()
     summary = json.loads(str(rec["summary"]))
     assert summary["outcome"] == OK and summary["policy"] == "qpp-race768/1"
-    line = json.loads((tmp_path / "records" / "trials.jsonl").read_text().splitlines()[-1])
+    assert summary["nonce"] == problem.nonce.hex()
+    line = json.loads(_trial_lines(tmp_path / "records")[-1])
     assert line == summary
 
 
-def test_the_default_postprocess_writes_no_record(tmp_path, fake_qpp):
+def test_a_processor_without_a_store_writes_no_record(tmp_path, fake_qpp):
     config = postprocess_config_from_toml("")
     assert config is not None
     processor = Postprocessor(config)
@@ -304,7 +318,7 @@ def test_a_failed_processor_is_a_failed_trial_with_its_raw_reads(tmp_path, fake_
     monkeypatch.setenv("FAKE_QPP_MODE", mode)
     config = postprocess_config_from_toml(config_toml(tmp_path))
     assert config is not None
-    processor = Postprocessor(config)
+    processor = Postprocessor(config, store=_store(tmp_path))
     problem = _salt()
     reads = _reads(problem)
     trial = _run(processor, problem, reads)
@@ -319,7 +333,7 @@ def test_a_stop_kills_the_processor_and_leaves_an_incomplete_trial(tmp_path, fak
     monkeypatch.setenv("FAKE_QPP_MODE", "hang")
     config = postprocess_config_from_toml(config_toml(tmp_path))
     assert config is not None
-    processor = Postprocessor(config)
+    processor = Postprocessor(config, store=_store(tmp_path))
     problem = _salt()
     deadline = time.monotonic() + 0.3
     started = time.monotonic()
@@ -334,7 +348,7 @@ def test_a_stop_before_the_start_never_runs_the_processor(tmp_path, fake_qpp, mo
     monkeypatch.setattr(qpp, "run", lambda *a, **k: calls.append(1))
     config = postprocess_config_from_toml(config_toml(tmp_path))
     assert config is not None
-    processor = Postprocessor(config)
+    processor = Postprocessor(config, store=_store(tmp_path))
     problem = _salt()
     trial = _run(processor, problem, _reads(problem), stop=lambda: True)
     assert trial.outcome == INCOMPLETE and not calls
@@ -390,7 +404,7 @@ def test_a_lease_salt_reports_the_final_state_beside_every_raw_read(monkeypatch,
         assert len(result.solutions) == 3
         rows = np.array([wire.decode_spins_packed(s.spins, len(problem.nodes)) for s in result.solutions])
         assert [s.energy_milli for s in result.solutions] == problem.energies_milli(rows).tolist()
-    lines = (tmp_path / "records" / "trials.jsonl").read_text().splitlines()
+    lines = _trial_lines(tmp_path / "records")
     assert sorted(json.loads(x)["salt_index"] for x in lines) == [0, 1, 2]
     assert all(json.loads(x)["outcome"] == OK for x in lines)
     # Billing is the device's access time alone; host time never reaches it.
@@ -408,7 +422,7 @@ def test_a_failed_postprocess_still_reports_the_raw_reads(monkeypatch, tmp_path,
     results, _ = lease_messages(sent)
     assert done.salts_done == 2
     assert all(len(r.solutions) == 2 for r in results)
-    lines = (tmp_path / "records" / "trials.jsonl").read_text().splitlines()
+    lines = _trial_lines(tmp_path / "records")
     assert [json.loads(x)["outcome"] for x in lines] == [FAILED, FAILED]
 
 
@@ -419,15 +433,15 @@ def test_a_cancel_during_the_postprocess_closes_the_lease_and_bills_the_salt(mon
     coord.send(job=lease_job(family_generator(zephyr_topology(), count=1)))
     records = tmp_path / "records"
     deadline = time.monotonic() + 10
-    while not list(records.glob("*.npz")) and time.monotonic() < deadline:
+    while not list(records.glob("*/*.npz")) and time.monotonic() < deadline:
         time.sleep(0.02)
-    assert list(records.glob("*.npz")), "the postprocess never started"
+    assert list(records.glob("*/*.npz")), "the postprocess never started"
     coord.send(cancel=miner_pb2.Cancel(max_generation=7))
     coord.wait_for(has_done())
     sent = coord.finish()
     done = assert_closed_once(sent)
     assert done.salts_done == 0 and not lease_messages(sent)[0]
-    (line,) = (records / "trials.jsonl").read_text().splitlines()
+    (line,) = _trial_lines(records)
     assert json.loads(line)["outcome"] == INCOMPLETE
     assert UsageLedger(str(tmp_path / "usage.db")).spent_us_since(0.0) == ACCESS_US
 
@@ -494,3 +508,155 @@ def test_the_postprocess_does_not_hold_the_qpu_slot(monkeypatch, tmp_path, fake_
     coord.send(cancel=miner_pb2.Cancel(max_generation=7))
     coord.wait_for(has_done())
     assert_closed_once(coord.finish())
+
+
+# -- the read records ----------------------------------------------------------
+
+
+def test_the_records_default_to_a_directory_beside_the_usage_database(tmp_path):
+    records = postprocess.records_config_from_toml(
+        f'usage_db = "{tmp_path / "usage.db"}"\n'
+    )
+    assert records.root == tmp_path / "qpu-reads"
+    assert records.max_bytes == int(postprocess.DEFAULT_RECORDS_MAX_GB * 1e9)
+    capped = postprocess.records_config_from_toml("records_max_gb = 0.5\n")
+    assert capped.max_bytes == 500_000_000
+    with pytest.raises(PostprocessConfigInvalid):
+        postprocess.records_config_from_toml("records_max_gb = 0\n")
+
+
+@pytest.mark.parametrize("extra", ["", "postprocess = false\n"])
+def test_a_salt_without_a_postprocess_still_leaves_its_reads(
+    monkeypatch, tmp_path, extra
+):
+    monkeypatch.setenv(qpp.BINARY_ENV, str(tmp_path / "absent"))
+    coord = Coordinator(monkeypatch, FakeDevice())
+    topo = zephyr_topology()
+    job = lease_job(family_generator(topo, count=2))
+    coord.start(
+        topo, target(), depth=2, toml=f'usage_db = "{tmp_path / "usage.db"}"\n' + extra
+    )
+    coord.send(job=job)
+    coord.wait_for(has_done())
+    results, _ = lease_messages(coord.finish())
+    assert len(results) == 2
+    lines = [json.loads(x) for x in _trial_lines(tmp_path / "qpu-reads")]
+    assert sorted(x["salt_index"] for x in lines) == [0, 1]
+    assert all(x["outcome"] == postprocess.RAW and x["raw_reads"] == 2 for x in lines)
+    admitted = admit(job, topo=topo)
+    problems = [admitted.problem(i) for i in (0, 1)]
+    nonces = {p.nonce.hex() for p in problems if p is not None}
+    assert len(nonces) == 2
+    assert {x["nonce"] for x in lines} == nonces
+    assert len(list((tmp_path / "qpu-reads").glob("*/*.npz"))) == 2
+
+
+def _raw(store, index: int, day_ts: float, size: int = 4000):
+    rng = np.random.default_rng(index)
+    spins = rng.choice(np.array([-1, 1], dtype=np.int8), (8, size))
+    trial = postprocess.Trial(
+        job_id=b"job",
+        salt_index=index,
+        family_id=postprocess.TWISTED_DIMER,
+        nonce=bytes(32),
+        policy="",
+        processor="",
+        seed=0,
+        raw_spins=spins,
+        raw_energies=np.zeros(8, dtype=np.int64),
+        outcome=postprocess.RAW,
+        ts_s=day_ts,
+    )
+    store.finish(trial)
+    return store.path(trial)
+
+
+def test_the_cap_deletes_the_oldest_days_first(tmp_path):
+    day = 86400.0
+    store = postprocess.TrialStore(tmp_path)
+    first = _raw(store, 0, 10 * day)
+    # Room for two and a half records, so the fourth write finds the store over the cap.
+    store.max_bytes = int(2.5 * first.stat().st_size)
+    second = _raw(store, 1, 11 * day)
+    assert first.exists() and second.exists()
+    third = _raw(store, 2, 12 * day)
+    fourth = _raw(store, 3, 12 * day)
+    assert not first.parent.exists()
+    assert third.exists() and fourth.exists()
+    # A new store counts what the directory already holds.
+    again = postprocess.TrialStore(tmp_path)
+    assert sum(again._day_bytes.values()) == sum(store._day_bytes.values())
+
+
+def test_a_day_past_the_cap_takes_no_more_records(tmp_path, caplog):
+    store = postprocess.TrialStore(tmp_path)
+    paths = [_raw(store, 0, 86400.0)]
+    store.max_bytes = int(1.5 * paths[0].stat().st_size)
+    paths += [_raw(store, i, 86400.0) for i in range(1, 4)]
+    assert [p.exists() for p in paths] == [True, True, False, False]
+    assert store.dropped == 2
+    assert any("not written" in r.getMessage() for r in caplog.records)
+
+
+def test_a_failing_disk_never_raises(tmp_path, monkeypatch):
+    store = postprocess.TrialStore(tmp_path)
+
+    def broken(*args, **kwargs):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(postprocess, "atomic_savez", broken)
+    _raw(store, 0, 86400.0)
+    assert store.dropped == 1
+
+
+# -- the reach gate ------------------------------------------------------------
+
+
+def test_the_gate_admits_every_salt_until_it_knows_the_gain():
+    gate = postprocess.ReachGate()
+    assert gate.reach_milli() is None
+    assert gate.admits(-5_000_000, -9_000_000)
+    for _ in range(postprocess.REACH_MIN_TRIALS):
+        gate.learn(-5_040_000, -5_056_000)
+    assert gate.reach_milli() == 16_000 + postprocess.REACH_MARGIN_MILLI
+
+
+def test_the_gate_rules_out_a_salt_the_processor_cannot_bring_to_the_target():
+    gate = postprocess.ReachGate()
+    for gain in range(postprocess.REACH_MIN_TRIALS):
+        gate.learn(-5_040_000, -5_050_000 - 500 * gain)
+    reach = gate.reach_milli()
+    assert reach == 17_500 + postprocess.REACH_MARGIN_MILLI
+    target = -5_080_000
+    assert gate.admits(target + reach, target)
+    assert gate.admits(-5_040_000, None)
+    verdicts = [
+        gate.admits(target + reach + 1, target)
+        for _ in range(postprocess.REACH_PROBE_EVERY)
+    ]
+    # One ruled-out salt in REACH_PROBE_EVERY still runs, so the reach keeps learning.
+    assert verdicts.count(True) == 1 and verdicts[-1]
+
+
+def test_a_salt_out_of_reach_reports_raw_reads_and_leaves_a_raw_record(
+    monkeypatch, tmp_path, fake_qpp
+):
+    monkeypatch.setattr(postprocess, "REACH_MIN_TRIALS", 1)
+    device = FakeDevice()
+    coord = _family_session(monkeypatch, tmp_path, device)
+    topo = zephyr_topology()
+    coord.send(job=lease_job(family_generator(topo, count=1)))
+    coord.wait_for(has_done())
+    # The first salt taught the gate its gain. A target far below every read is now out of reach.
+    coord.send(set_target=target(max_energy_milli=-(10**9)))
+    coord.send(job=lease_job(family_generator(topo, count=2), job_id=b"lease-2"))
+    coord.wait_for(has_done(b"lease-2"))
+    sent = coord.finish()
+    (first,), _ = lease_messages(sent)
+    second, _ = lease_messages(sent, b"lease-2")
+    # The final state and two raw reads, then two raw reads alone for each salt out of reach.
+    assert len(first.solutions) == 3 and [len(r.solutions) for r in second] == [2, 2]
+    outcomes = sorted(
+        json.loads(x)["outcome"] for x in _trial_lines(tmp_path / "records")
+    )
+    assert outcomes == [OK, postprocess.RAW, postprocess.RAW]
