@@ -127,8 +127,11 @@ threads of `dwave-cloud-client`:
 
 ```toml
 queue_depth = 96
-sapi_slots = 48
+sapi_slots = 40
 ```
+
+`sapi_slots` defaults to 40. Set it to 0 to keep the transport of
+`dwave-cloud-client`.
 
 Each slot posts one problem and then waits on `GET problems/<id>/?timeout=30`.
 SAPI answers that request with the samples when the problem finishes.
@@ -142,13 +145,23 @@ At most `sapi_slots` problems are at SAPI. The rest of
 request and costs nothing. A slot posts its next problem the moment its answer arrives, so SAPI holds
 about `sapi_slots` problems, less the problems in transit. On a fake SAPI
 with an 80 ms round trip, 40 slots kept at least 30 to 36 problems at SAPI,
-and 48 slots kept at least 42. Use 48 slots to keep at least 30 problems
-queued or running there with a margin, so that the QPU never waits for the
-miner. On Advantage2 on 2026-11-14, 40 slots kept at least 36 problems at SAPI
+and 48 slots kept at least 42. Both keep at least 30 problems queued or
+running there, so that the QPU never waits for the miner. On Advantage2 on 2026-11-14, 40 slots kept at least 36 problems at SAPI
 and 48 slots kept at least 43, both at 15 problems per second. The answer to a
 problem took 2.6 s at 40 slots and 3.0 s at 48. Set `queue_depth` higher than `sapi_slots`. SAPI rejects more than
-1,000 problems per member in one solver queue. Leave it unset, or set it to 0,
-to keep the transport of `dwave-cloud-client`.
+1,000 problems per member in one solver queue.
+
+### Programming thermalization
+
+The QPU waits after it programs a problem and before the first read, and bills
+the wait. `programming_thermalization_us` sets that wait in microseconds. The
+default is 0. On Advantage2 on 2026-11-14, 0 and the solver's own 1,000 µs
+gave the same best energy on 120 models (a difference of 0.38 ± 0.29 units),
+and 0 bills 1 ms less for each problem.
+
+```toml
+programming_thermalization_us = 0
+```
 
 Depth does not raise jobs per hour under a budget. The budget paces spend
 across the quota period, and it funds fewer jobs per second than even a

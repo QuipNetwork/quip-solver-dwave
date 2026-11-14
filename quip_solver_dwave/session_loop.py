@@ -47,6 +47,7 @@ from quip_solver_dwave.budget import (
 from quip_solver_dwave.config import (
     SamplingDefaults,
     queue_depth_from_toml,
+    programming_thermalization_us_from_toml,
     sapi_slots_from_toml,
     sampling_defaults_from_toml,
 )
@@ -1642,7 +1643,13 @@ def run_session(  # pyright: ignore[reportGeneralTypeIssues]
                 # offline samplers share the sample() surface alone.
                 use_direct = getattr(sampler, "use_direct_transport", None)
                 if use_direct is not None:
-                    use_direct(sapi_slots_from_toml(cm.configure.backend_toml))
+                    # Slots beyond the pipeline depth would never hold a problem.
+                    use_direct(min(depth, sapi_slots_from_toml(cm.configure.backend_toml)))
+                use_thermalization = getattr(sampler, "use_programming_thermalization", None)
+                if use_thermalization is not None:
+                    use_thermalization(
+                        programming_thermalization_us_from_toml(cm.configure.backend_toml)
+                    )
                 logger.info(
                     "[QPU] pipeline depth %d (coordinator asked for %s)",
                     depth,

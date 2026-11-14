@@ -249,9 +249,17 @@ def test_the_sampler_routes_cloud_problems_through_the_slots(sapi_factory):
 
 
 def test_sapi_slots_is_read_from_the_backend_toml():
-    from quip_solver_dwave.config import sapi_slots_from_toml
+    from quip_solver_dwave.config import DEFAULT_SAPI_SLOTS, sapi_slots_from_toml
 
     assert sapi_slots_from_toml("sapi_slots = 12\n") == 12
-    assert sapi_slots_from_toml("queue_depth = 96\n") == 0
+    assert sapi_slots_from_toml("sapi_slots = 0\n") == 0
     assert sapi_slots_from_toml("sapi_slots = true\n") == 0
-    assert sapi_slots_from_toml("") == 0
+    assert sapi_slots_from_toml("queue_depth = 96\n") == DEFAULT_SAPI_SLOTS
+    assert sapi_slots_from_toml("") == DEFAULT_SAPI_SLOTS
+
+
+def test_programming_thermalization_defaults_to_zero():
+    from quip_solver_dwave.config import programming_thermalization_us_from_toml
+
+    assert programming_thermalization_us_from_toml("") == 0
+    assert programming_thermalization_us_from_toml("programming_thermalization_us = 1000\n") == 1000

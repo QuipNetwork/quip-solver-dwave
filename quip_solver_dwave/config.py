@@ -143,18 +143,43 @@ def queue_depth_from_toml(toml_text: str) -> int:
     return _non_negative(data, "queue_depth")
 
 
+# Measured on Advantage2 on 2026-11-14 at 48 reads of a 160 us anneal: 40 slots
+# kept 36 or more problems at SAPI at the chip's 15 problems per second, and
+# answered 0.4 s sooner than 48 slots.
+DEFAULT_SAPI_SLOTS = 40
+
+
+def _backend_table(toml_text: str) -> dict:
+    """The parsed ``backend_toml``, or an empty table when it is blank or will not parse."""
+    if not toml_text or not toml_text.strip():
+        return {}
+    try:
+        return tomllib.loads(toml_text)
+    except Exception:
+        return {}
+
+
 def sapi_slots_from_toml(toml_text: str) -> int:
-    """Read ``sapi_slots`` from ``backend_toml``; 0 (the cloud client's own transport) when unset.
+    """Read ``sapi_slots`` from ``backend_toml``; :data:`DEFAULT_SAPI_SLOTS` when unset.
 
     A positive value sends each problem through
     :class:`quip_solver_dwave.direct_sapi.DirectTransport` with that many
     problems at SAPI at once; the rest of ``queue_depth`` waits locally, where
-    a Cancel costs nothing. Same lenient parse as :func:`queue_depth_from_toml`.
+    a Cancel costs nothing. An explicit 0 keeps the cloud client's own
+    transport. Same lenient parse as :func:`queue_depth_from_toml`.
     """
-    if not toml_text or not toml_text.strip():
-        return 0
-    try:
-        data = tomllib.loads(toml_text)
-    except Exception:
-        return 0
+    data = _backend_table(toml_text)
+    if data.get("sapi_slots") is None:
+        return DEFAULT_SAPI_SLOTS
     return _non_negative(data, "sapi_slots")
+
+
+def programming_thermalization_us_from_toml(toml_text: str) -> int:
+    """Read ``programming_thermalization_us`` from ``backend_toml``; 0 when unset.
+
+    The QPU waits this long after it programs a problem and before the first
+    read, and bills the wait. On Advantage2 on 2026-11-14 the solver's own
+    1,000 us and 0 gave the same best energy on 120 models (difference
+    0.38 +/- 0.29 units), so the default is 0.
+    """
+    return _non_negative(_backend_table(toml_text), "programming_thermalization_us")

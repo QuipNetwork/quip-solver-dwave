@@ -117,6 +117,20 @@ def test_an_anneal_time_override_becomes_the_end_of_the_ramp():
     s.close()
 
 
+def test_programming_thermalization_is_sent_once_set_and_only_to_a_solver_that_lists_it():
+    s, bodies = _cloud_sampler()
+    _submit(s)
+    s.use_programming_thermalization(0)
+    _submit(s)
+    s.sampler.solver.parameters["programming_thermalization"] = "wait before the first read"
+    _submit(s)
+
+    assert "programming_thermalization" not in bodies[0]["params"]
+    assert "programming_thermalization" not in bodies[1]["params"]
+    assert bodies[2]["params"]["programming_thermalization"] == 0
+    s.close()
+
+
 def test_a_cold_job_sends_no_reverse_anneal_parameters():
     s, bodies = _cloud_sampler()
     _submit(s)

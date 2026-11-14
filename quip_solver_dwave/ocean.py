@@ -346,6 +346,9 @@ class OceanSampler:
         # Problems per SAPI slot transport (see use_direct_transport); 0 keeps
         # the cloud client's own submit, poll and load threads.
         self._sapi_slots = 0
+        # Microseconds between programming and the first read; None leaves
+        # the solver's own default in place.
+        self._programming_thermalization_us: Optional[int] = None
         self._direct = None
         self._direct_lock = threading.Lock()
         # Built on first submit, when the solver's ordering is known.
@@ -780,6 +783,10 @@ class OceanSampler:
         if self._sapi_slots:
             logger.info("[QPU] direct SAPI transport, %d problems at SAPI at once", self._sapi_slots)
 
+    def use_programming_thermalization(self, microseconds: int) -> None:
+        """Set the wait between programming and the first read for later cloud problems."""
+        self._programming_thermalization_us = max(0, int(microseconds))
+
     def _direct_transport(self, solver):
         with self._direct_lock:
             if self._direct is None:
@@ -851,6 +858,12 @@ class OceanSampler:
         # arrays: ~27 ms of GIL-bound work per job at production size, against
         # ~0.6 ms here. quip_solver_dwave.qp pins byte equality with that
         # function, so what reaches SAPI is unchanged.
+        # A solver that does not list the parameter would refuse the problem.
+        if (
+            self._programming_thermalization_us is not None
+            and "programming_thermalization" in solver.parameters
+        ):
+            params["programming_thermalization"] = self._programming_thermalization_us
         encoder, plan = self._graph_plan(solver, nodes, edges)
         data = encoder.encode(plan, h, j)
         body = build_submission_body(solver, data, params, label=label)
