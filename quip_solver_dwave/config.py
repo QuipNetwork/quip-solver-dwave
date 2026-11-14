@@ -13,6 +13,8 @@ import tomllib
 from dataclasses import dataclass
 from typing import Iterable, Optional, TypeVar
 
+from quip_solver_dwave.tiling import DEFAULT_TILE_PASSES, TILE_MODES
+
 logger = logging.getLogger(__name__)
 
 # Keys consumed by the shared session layer, not any single backend; never
@@ -172,6 +174,28 @@ def sapi_slots_from_toml(toml_text: str) -> int:
     if data.get("sapi_slots") is None:
         return DEFAULT_SAPI_SLOTS
     return _non_negative(data, "sapi_slots")
+
+
+def tile_passes_from_toml(toml_text: str) -> int:
+    """Read ``tile_passes`` from ``backend_toml``; :data:`DEFAULT_TILE_PASSES` when unset or 0.
+
+    Only a chip smaller than the session's Zephyr reads it: each job anneals
+    every patch this many times (see :mod:`quip_solver_dwave.tiling`).
+    """
+    return _non_negative(_backend_table(toml_text), "tile_passes") or DEFAULT_TILE_PASSES
+
+
+def tile_mode_from_toml(toml_text: str) -> str:
+    """Read ``tile_mode`` from ``backend_toml``; ``sequential`` when unset or unknown.
+
+    ``batch-seam`` anneals the core patches at once and then the seam patches
+    across their cuts (see :mod:`quip_solver_dwave.tiling`).
+    """
+    value = _backend_table(toml_text).get("tile_mode", "sequential")
+    if value not in TILE_MODES:
+        logger.warning("tile_mode %r is not one of %s; using sequential", value, TILE_MODES)
+        return "sequential"
+    return value
 
 
 def programming_thermalization_us_from_toml(toml_text: str) -> int:

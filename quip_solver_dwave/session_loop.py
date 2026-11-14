@@ -49,6 +49,8 @@ from quip_solver_dwave.config import (
     queue_depth_from_toml,
     programming_thermalization_us_from_toml,
     sapi_slots_from_toml,
+    tile_mode_from_toml,
+    tile_passes_from_toml,
     sampling_defaults_from_toml,
 )
 from quip_solver_dwave.families import accepted_family_support
@@ -1645,6 +1647,12 @@ def run_session(  # pyright: ignore[reportGeneralTypeIssues]
                 if use_direct is not None:
                     # Slots beyond the pipeline depth would never hold a problem.
                     use_direct(min(depth, sapi_slots_from_toml(cm.configure.backend_toml)))
+                use_tile_passes = getattr(sampler, "use_tile_passes", None)
+                if use_tile_passes is not None:
+                    use_tile_passes(tile_passes_from_toml(cm.configure.backend_toml))
+                use_tile_mode = getattr(sampler, "use_tile_mode", None)
+                if use_tile_mode is not None:
+                    use_tile_mode(tile_mode_from_toml(cm.configure.backend_toml))
                 use_thermalization = getattr(sampler, "use_programming_thermalization", None)
                 if use_thermalization is not None:
                     use_thermalization(

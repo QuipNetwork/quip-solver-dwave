@@ -38,6 +38,14 @@ from quip_solver_dwave.schedule import (
     forward_schedule,
     reverse_schedule,
 )
+from quip_solver_dwave.tiling import (
+    DEFAULT_TILE_PASSES,
+    TILE_MODES,
+    TilePlan,
+    ZephyrTiling,
+    anneal_tiled,
+    zephyr_shape,
+)
 from quip_solver_dwave.warm import WarmStart
 
 logger = logging.getLogger(__name__)
@@ -305,6 +313,11 @@ def server_timestamps(raw: Any) -> tuple[Optional[float], Optional[float]]:
     )
 
 
+#: Graphs whose encoder plan ``_graph_plan`` keeps. A Z(6) chip covers the
+#: network's Z(12) graph in 5 to 8 patches; anything beyond that is headroom.
+PLAN_CACHE_SIZE = 16
+
+
 class OceanSampler:
     """Thin wrapper around a D-Wave (or mock) sampler.
 
@@ -353,7 +366,7 @@ class OceanSampler:
         self._direct_lock = threading.Lock()
         # Built on first submit, when the solver's ordering is known.
         self._encoder: Optional[QpEncoder] = None
-        self._plan_cache = None
+        self._plan_cache: List[Tuple[Any, Any, Any]] = []
         self._defective_qubits: List[int] = list(defective_qubits or [])
         self._defective_edges: set = set(defective_edges or set())
         self._live_nodes: List[int] = []
@@ -361,6 +374,12 @@ class OceanSampler:
         # Sets of the live graph for unplaceable(), rebuilt when it changes.
         self._live_sets: Optional[Tuple[Tuple[int, int], frozenset, frozenset]] = None
         self._native_hash: Optional[bytes] = None
+        # (m, t) of a Zephyr chip, read at connect. A session Zephyr larger
+        # than it is annealed in patches (see quip_solver_dwave.tiling).
+        self._live_zephyr: Optional[Tuple[int, int]] = None
+        self._tiling: Optional[ZephyrTiling] = None
+        self._tile_passes = DEFAULT_TILE_PASSES
+        self._tile_mode = "sequential"
         self._is_mock = False
         self._qpu_solver = None
         self._connected = False
@@ -429,6 +448,7 @@ class OceanSampler:
         self._qpu_solver = base
         self._live_nodes = sorted(int(n) for n in base.nodelist)
         self._live_edges = [(int(u), int(v)) for u, v in base.edgelist]
+        self._live_zephyr = zephyr_shape(base.properties)
         logger.info(
             "[QPU] connected solver=%s qubits=%d",
             base.properties.get("chip_id", "?"),
@@ -459,7 +479,9 @@ class OceanSampler:
     def live_edges(self) -> List[Tuple[int, int]]:
         return list(self._live_edges)
 
-    def unplaceable(self, nodes: Sequence[int], edges: "np.ndarray") -> Tuple[int, int]:
+    def unplaceable(
+        self, nodes: "Sequence[int] | np.ndarray", edges: "np.ndarray"
+    ) -> Tuple[int, int]:
         """``(qubits, couplers)`` of a job graph that this solver cannot anneal.
 
         A part counts when it is neither on the live graph nor clamped as a
@@ -469,6 +491,15 @@ class OceanSampler:
         """
         if not self._live_nodes:
             return 0, 0
+        if self._tiling is not None:
+            # The live labels number a smaller Zephyr than the job's, so a
+            # label match would be a coincidence. What matters is whether the
+            # patches cover the instance; every node and coupler is then
+            # annealed or folded, and nothing is embedded or truncated.
+            edge_arr = np.asarray(edges, dtype=np.int64).reshape(-1, 2)
+            if self._tiling.plan(np.asarray(nodes, dtype=np.int64), edge_arr) is not None:
+                return 0, 0
+            return len(nodes), int(edge_arr.shape[0])
         key = (id(self._live_nodes), id(self._live_edges))
         if self._live_sets is None or self._live_sets[0] != key:
             self._live_sets = (
@@ -510,7 +541,14 @@ class OceanSampler:
                 key = (min(u, v), max(u, v))
                 if key not in live_edge_set:
                     self._defective_edges.add((u, v))
-            self._log_topology_fit(len(nodes_l), len(edges_l))
+            self._tiling = self._tiling_for(nodes_l, edges_l)
+            if self._tiling is None:
+                self._log_topology_fit(len(nodes_l), len(edges_l))
+            else:
+                # Patches name live qubits and couplers only, and the label
+                # diff above compares two numberings: nothing to clamp.
+                self._defective_qubits = []
+                self._defective_edges = set()
         else:
             # Mock / no live hardware: treat session topology as native.
             self._live_nodes = nodes_l
@@ -518,6 +556,49 @@ class OceanSampler:
             self._defective_qubits = []
             self._defective_edges = set()
             self._native_hash = native_topology_hash(nodes_l, edges_l)
+
+    def _tiling_for(
+        self, session_nodes: Sequence[int], session_edges: Sequence[Tuple[int, int]]
+    ) -> Optional[ZephyrTiling]:
+        """A tiler when the session names qubits past the end of this Zephyr chip.
+
+        This runs on the session thread, so it only compares labels. The cuts
+        (``ZephyrTiling.prepare``, about a second) are chosen on a thread of
+        their own as the Topology arrives, and a job that comes first waits
+        for them inside ``plan`` on its worker.
+        """
+        shape = self._live_zephyr
+        if shape is None or not session_nodes:
+            return None
+        rows, tile = shape
+        if max(session_nodes) < 4 * tile * rows * (2 * rows + 1):
+            return None
+        logger.info(
+            "[QPU] session topology (%d nodes) is larger than this Z(%d,%d) "
+            "chip; jobs are annealed in patches, %d pass(es) each",
+            len(session_nodes),
+            rows,
+            tile,
+            self._tile_passes,
+        )
+        tiling = ZephyrTiling(rows, tile, self._live_nodes, self._live_edges)
+        threading.Thread(
+            target=tiling.prepare,
+            args=(list(session_nodes), list(session_edges)),
+            name="dwave-tile-cuts",
+            daemon=True,
+        ).start()
+        return tiling
+
+    def use_tile_passes(self, passes: int) -> None:
+        """Set how many times a tiled job anneals each patch."""
+        self._tile_passes = max(1, int(passes))
+
+    def use_tile_mode(self, mode: str) -> None:
+        """Set how a tiled job orders its patches (``tiling.TILE_MODES``)."""
+        if mode not in TILE_MODES:
+            raise ValueError(f"tile mode {mode!r} is not one of {TILE_MODES}")
+        self._tile_mode = mode
 
     def _log_topology_fit(self, session_nodes: int, session_edges: int) -> None:
         """Report how much of the session topology this solver can anneal.
@@ -565,24 +646,25 @@ class OceanSampler:
         key is the arrays, not their sizes. Two family-lease salts can carry
         different graphs with equal counts, and a size key would encode the
         second against the first one's plan. Comparing the arrays is a memcmp.
+
+        A tiled session sends one graph per patch, in turn, so the cache keeps
+        :data:`PLAN_CACHE_SIZE` graphs; holding one would re-plan every patch.
         """
         with self._inflight_lock:
-            cached = self._plan_cache
+            cached = list(self._plan_cache)
         encoder = self._encoder
         if encoder is None:
             encoder = QpEncoder(
                 solver._encoding_qubits, solver._encoding_couplers
             )
             self._encoder = encoder
-        if (
-            cached is not None
-            and np.array_equal(cached[0], nodes)
-            and np.array_equal(cached[1], edges)
-        ):
-            return encoder, cached[2]
+        for c_nodes, c_edges, c_plan in cached:
+            if np.array_equal(c_nodes, nodes) and np.array_equal(c_edges, edges):
+                return encoder, c_plan
         plan = encoder.plan(nodes, edges)
+        entry = (np.array(nodes, copy=True), np.array(edges, copy=True), plan)
         with self._inflight_lock:
-            self._plan_cache = (np.array(nodes, copy=True), np.array(edges, copy=True), plan)
+            self._plan_cache = [entry, *self._plan_cache][:PLAN_CACHE_SIZE]
         return encoder, plan
 
     def _clamp_defects(self, nodes, h, edges, j, nonce_seed, warm_start=None):
@@ -972,7 +1054,127 @@ class OceanSampler:
         ``None`` (the existing default). Passing ``False`` stops the server
         from rescaling coefficients that a caller has already fit to the
         solver's ranges (see ``quip_solver_dwave.physical_range``).
+
+        On a chip smaller than the session's Zephyr (``tiling``) the problem
+        is annealed patch by patch, each patch one submission through
+        :meth:`_sample_once`.
         """
+        tiling = self._tiling
+        plan = tiling.plan(nodes, edges) if tiling is not None else None
+        if plan is not None:
+            return self._sample_tiled(
+                plan,
+                h,
+                j,
+                num_reads=num_reads,
+                anneal_time_us=anneal_time_us,
+                label=label,
+                cancel_key=cancel_key,
+                warm_start=warm_start,
+            )
+        return self._sample_once(
+            nodes,
+            h,
+            edges,
+            j,
+            num_reads=num_reads,
+            anneal_time_us=anneal_time_us,
+            nonce_seed=nonce_seed,
+            label=label,
+            cancel_key=cancel_key,
+            warm_start=warm_start,
+            auto_scale=auto_scale,
+        )
+
+    def _sample_tiled(
+        self,
+        plan: TilePlan,
+        h: "np.ndarray",
+        j: "np.ndarray",
+        *,
+        num_reads: int,
+        anneal_time_us: Optional[int],
+        label: str,
+        cancel_key: Optional[bytes],
+        warm_start: Optional[WarmStart],
+    ) -> SampleResult:
+        """Anneal ``plan``'s patches in turn and return whole-problem states.
+
+        Every patch is its own SAPI problem under the job's cancel key, so a
+        Cancel reaches whichever patch is on the QPU and stops the rest. A
+        patch that raises has been billed by :meth:`_sample_once`; the
+        patches before it finished and were charged, so their access time is
+        booked here before the error leaves, or the ledger would lose it.
+        """
+        spent = 0
+        first_inflight: Optional[int] = None
+        # The batch-seam mode submits the core patches from several threads.
+        tally = threading.Lock()
+
+        def submit(live, field, live_edges, j_in):
+            nonlocal spent, first_inflight
+            result = self._sample_once(
+                live,
+                field,
+                live_edges,
+                j_in,
+                num_reads=num_reads,
+                anneal_time_us=anneal_time_us,
+                label=label,
+                cancel_key=cancel_key,
+            )
+            with tally:
+                spent += result.device_access_time_us
+                if first_inflight is None:
+                    first_inflight = result.inflight_at_submit
+            col = {int(v): i for i, v in enumerate(result.variables)}
+            idx = np.fromiter((col[int(q)] for q in live), dtype=np.intp, count=len(live))
+            return result.spins[:, idx], result.device_access_time_us
+
+        try:
+            answer = anneal_tiled(
+                plan,
+                h,
+                j,
+                passes=self._tile_passes,
+                submit=submit,
+                initial=None if warm_start is None else warm_start.state,
+                mode=self._tile_mode,
+            )
+        except BaseException:
+            with self._inflight_lock:
+                self._unobserved_access_us += spent
+            raise
+        return SampleResult(
+            spins=answer.spins,
+            variables=[int(n) for n in plan.nodes],
+            energies=[float(e) for e in answer.energies],
+            device_access_time_us=answer.access_us,
+            num_reads=len(answer.spins),
+            extra={
+                "mock": "1" if self._is_mock else "0",
+                "inflight": str(first_inflight or 0),
+                "tile_calls": str(answer.calls),
+            },
+            inflight_at_submit=first_inflight or 0,
+        )
+
+    def _sample_once(
+        self,
+        nodes: "np.ndarray",
+        h: "np.ndarray",
+        edges: "np.ndarray",
+        j: "np.ndarray",
+        *,
+        num_reads: int = 1,
+        anneal_time_us: Optional[int] = None,
+        nonce_seed: Optional[bytes] = None,
+        label: str = "quip-dwave-qa",
+        cancel_key: Optional[bytes] = None,
+        warm_start: Optional[WarmStart] = None,
+        auto_scale: Optional[bool] = None,
+    ) -> SampleResult:
+        """One SAPI problem: clamp defects, submit, decode, bill."""
         full_nodes = nodes
         nodes, h, edges, j, defect_info = self._clamp_defects(
             nodes, h, edges, j, nonce_seed, warm_start

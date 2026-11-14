@@ -74,6 +74,8 @@ DWAVE_CONFIG_KEYS = frozenset(
         "easy_target_share",
         "postprocess",
         "records_max_gb",
+        "tile_passes",
+        "tile_mode",
     }
 )
 

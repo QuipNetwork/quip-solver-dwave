@@ -246,6 +246,36 @@ the QPU does not have makes SAPI reject the whole problem. This path still
 speaks dicts; the normal case (live graph matches) passes arrays straight
 through.
 
+### Tiling on a smaller Zephyr chip
+
+`Advantage2_system4` (`na-east-1`) is a Z(6,4) chip, and the network's
+topology is the Z(12,4) graph of `Advantage2_system1`. Zephyr labels depend
+on the grid size, so a label match between the two is a coincidence. When the
+session names a qubit past the end of a live Zephyr chip,
+`OceanSampler.set_session_topology` builds a `tiling.ZephyrTiling`. It skips
+defect clamping and starts `prepare` on its own thread. `prepare` chooses the
+cuts once from the Topology, about a second. Each job only binds them in
+`plan`. `sample()` then runs `anneal_tiled`, one SAPI problem for each patch
+under the job's cancel key. `tile_mode = "batch-seam"` anneals the core patches
+at once and then seam patches across their cuts. On 17 winning qblocks it beat
+`sequential` by 5 units after the race. The batch stage submits from several
+threads, so every access counter in that path is taken under a lock.
+
+- Billing: a patch that raises is billed by `_sample_once`. The patches that
+  finished before it are booked to the unobserved charge before the error
+  leaves (`test_patches_that_finished_are_billed_when_a_later_one_fails`).
+- Acceptance: a patch result replaces the state only if the exact whole energy
+  does not rise. Read selection uses the true folded field. The submission
+  uses `clip_fields`, which keeps the field inside the h range without moving
+  the optimum.
+- Family jobs: `unplaceable` answers (0, 0) for any graph the cuts can bind,
+  so the network's family jobs are tiled, not rejected.
+- Energy sums in `tiling.py` are elementwise, not `@`. BLAS start-up made a
+  one-row product cost 28 ms on a loaded host.
+
+[docs/advantage2-system4.md](docs/advantage2-system4.md) has the run
+instructions, the measured costs, and the performance options.
+
 `run_session` builds one `Capabilities` message per session. `Hello` carries
 it, and every `GetCapabilities` reply repeats it, because quip-solver-drive
 requires the two to agree field for field. `Capabilities.native_topology_hash`
