@@ -5,7 +5,7 @@ Binary entry point: ``quip-dwave-qa`` (``python -m quip_solver_dwave``).
 
 # Kept in step with pyproject.toml by tests/test_version.py. `--version`
 # prints this string, so drift here misreports the running binary.
-__version__ = "0.3.7rc2"
+__version__ = "0.3.7rc3"
 
 # sysexits-style exit codes (mirrored by quip_protocol::session::ExitCode)
 EXIT_CLEAN = 0

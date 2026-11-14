@@ -1369,9 +1369,14 @@ def run_session(
                 else:
                     pool.submit(fn, problem).add_done_callback(_surface_pool_failure)
 
-            def host_submit(fn, *args):
+            def host_submit(fn, *args) -> bool:
+                # False: the postprocess queue is full, the salt reports raw reads.
                 assert host is not None
-                host.submit(fn, *args).add_done_callback(_surface_pool_failure)
+                future = host.submit(fn, *args)
+                if future is None:
+                    return False
+                future.add_done_callback(_surface_pool_failure)
+                return True
 
             run_lease(
                 admitted,

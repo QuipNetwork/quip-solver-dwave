@@ -11,6 +11,7 @@ import json
 import os
 import stat
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import List
@@ -95,6 +96,49 @@ def test_no_table_means_the_default_postprocess(text):
     policy = config.policies["quip/twisted-ice-dimer"]
     assert policy.name == "qpp-race2048-repair32/1"
     assert policy.params["stages"] == "8:64,2:256,1:1024" and policy.params["repair_depth"] == 32
+
+
+def test_the_default_counts_the_processors_the_process_may_use(monkeypatch):
+    # A container cpuset limits the affinity, not os.cpu_count().
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: {0}, raising=False)
+    config = postprocess_config_from_toml("")
+    assert config is not None and (config.threads, config.max_pending) == (1, 2)
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set(range(16)), raising=False)
+    config = postprocess_config_from_toml("")
+    assert config is not None
+    assert (config.threads, config.max_pending) == (postprocess.DEFAULT_MAX_THREADS, 8)
+
+
+def test_a_table_sets_no_queue_limit(tmp_path):
+    config = postprocess_config_from_toml(config_toml(tmp_path))
+    assert config is not None and config.max_pending is None
+
+
+def test_a_full_queue_refuses_the_next_salt(monkeypatch, fake_qpp):
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: {0}, raising=False)
+    config = postprocess_config_from_toml("")
+    assert config is not None
+    processor = Postprocessor(config)
+    gate = threading.Event()
+
+    def hold() -> None:
+        gate.wait()
+
+    try:
+        first, second = processor.submit(hold), processor.submit(hold)
+        assert first is not None and second is not None
+        assert processor.submit(hold) is None and processor.skipped == 1
+        gate.set()
+        first.result(timeout=5)
+        second.result(timeout=5)
+        again = None
+        deadline = time.monotonic() + 5
+        while again is None and time.monotonic() < deadline:
+            again = processor.submit(hold)
+        assert again is not None
+    finally:
+        gate.set()
+        processor.close()
 
 
 def test_false_turns_the_postprocess_off():
@@ -414,6 +458,28 @@ def test_the_default_without_its_processor_reports_raw_reads(monkeypatch, tmp_pa
     results, _ = lease_messages(sent)
     # The two raw reads of the salt, and no final state ahead of them.
     assert len(results) == 1 and len(results[0].solutions) == 2
+
+
+def test_a_backlog_never_delays_results(monkeypatch, tmp_path, fake_qpp):
+    # One processor that never finishes, and a queue of two. The two queued
+    # salts wait; every later salt reports its raw reads at once.
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: {0}, raising=False)
+    monkeypatch.setenv("FAKE_QPP_MODE", "hang")
+    coord = Coordinator(monkeypatch, FakeDevice())
+    topo = zephyr_topology()
+    coord.start(topo, target(), depth=1, toml="")
+    coord.send(job=lease_job(family_generator(topo, count=6)))
+    seen: List[miner_pb2.MinerMsg] = []
+
+    def four_results(sent) -> bool:
+        seen[:] = sent
+        return len(lease_messages(sent)[0]) == 4
+
+    coord.wait_for(four_results)
+    assert all(len(r.solutions) == 2 for r in lease_messages(seen)[0])
+    coord.send(cancel=miner_pb2.Cancel(max_generation=7))
+    coord.wait_for(has_done())
+    assert_closed_once(coord.finish())
 
 
 def test_the_postprocess_does_not_hold_the_qpu_slot(monkeypatch, tmp_path, fake_qpp):

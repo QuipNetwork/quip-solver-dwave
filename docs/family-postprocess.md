@@ -15,12 +15,13 @@ When `Configure.backend_toml` has no `[postprocess]` table, the miner uses these
 
 - `quip/twisted-ice-dimer` gets the policy `qpp-race2048-repair32/1`.
 - The miner writes no trial record.
-- The number of processors that run at once is the processor count of the host minus 1, with a minimum of 1 and a maximum of 4.
+- The number of processors that run at once is the number of processors the miner may use minus 1, with a minimum of 1 and a maximum of 4. A container `cpuset` limits that number.
+- At most 2 salts for each processor wait or run at once. A salt that arrives when that queue is full reports its raw reads at once, without a postprocess. The postprocess never delays results when the host is slower than the QPU.
 - If the miner does not find the processor binary, it logs a warning and reports raw reads alone.
 
 The line `postprocess = false` turns the postprocess off.
 
-A `[postprocess]` table replaces the default settings:
+A `[postprocess]` table replaces the default settings. A table sets no queue limit: every salt waits for its postprocess, so the host must keep up with the QPU.
 
 ```toml
 [postprocess]

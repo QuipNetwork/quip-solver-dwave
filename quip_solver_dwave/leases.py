@@ -555,7 +555,9 @@ def run_lease(
     it back when its sampling ends. ``submit(fn, problem)`` runs a salt on the
     session's job pool. A salt with a postprocess hands its host work to
     ``host_submit(fn, ...)``, so the job pool worker, which stands for one
-    QPU submission, is free for the next salt. No salt is drawn after a stop.
+    QPU submission, is free for the next salt. When ``host_submit`` returns
+    ``False`` the host queue is full, and the salt reports its raw reads at
+    once. No salt is drawn after a stop.
     """
     ledger = _Ledger()
     no_more = threading.Event()
@@ -624,11 +626,15 @@ def run_lease(
                 run_host = host_submit or (lambda fn, *args: fn(*args))
                 handed_off = True
                 try:
-                    run_host(host_work, problem, spins, meta)
+                    accepted = run_host(host_work, problem, spins, meta)
                 except RuntimeError:
                     # The host pool shut down: the session is ending.
                     handed_off = False
-                return
+                    return
+                if accepted is not False:
+                    return
+                # The host queue is full: this salt reports its raw reads now.
+                handed_off = False
             report(problem, spins, meta)
         except Exception:  # noqa: BLE001 - a salt must always be counted finished
             logger.exception("lease %s salt %d failed", lease.job_id.hex(), problem.index)
