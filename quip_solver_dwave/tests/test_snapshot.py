@@ -21,6 +21,7 @@ NOW = MONDAY + 6 * 86_400
 
 def _round(store, start, generation, *, jobs, length=600):
     store.open_round(start, generation, joined=True, reason="budget", expected_jobs=None)
+    store.set_round_target(start, -14_554_000)
     store.close_round(start, start + length)
     for i in range(jobs):
         store.record_job(
@@ -68,6 +69,35 @@ def test_the_refresher_serves_the_latest_snapshot_without_a_thread():
     snap = refresher.refresh_now()
     assert snap is not None and refresher.latest() is snap
     refresher.stop()
+
+
+def test_pause_intervals_do_not_displace_mineable_rounds_from_the_sample():
+    store = HistoryStore(":memory:")
+    _round(store, MONDAY, 1, jobs=1, length=420)
+    # Old databases already distinguish these intervals: no SetTarget arrived.
+    # Filter before taking the last 100, so a burst cannot erase the evidence.
+    for i in range(101):
+        start = MONDAY + 3600 + i * 2
+        store.open_round(start, i + 2, joined=True, reason="explore", expected_jobs=None)
+        store.close_round(start, start + 1)
+    assert build_snapshot(store, NOW).round_length_s == 420
+
+
+def test_only_pause_history_uses_the_default_round_length():
+    store = HistoryStore(":memory:")
+    store.open_round(MONDAY, 1, joined=True, reason="explore", expected_jobs=None)
+    store.close_round(MONDAY, MONDAY + 5)
+    assert build_snapshot(store, NOW).round_length_s == DEFAULT_ROUND_LENGTH_S
+
+
+def test_short_mineable_rounds_and_rounds_sat_out_still_count():
+    store = HistoryStore(":memory:")
+    _round(store, MONDAY, 1, jobs=0, length=2)
+    start = MONDAY + 3600
+    store.open_round(start, 2, joined=False, reason="slow-slot", expected_jobs=None)
+    store.set_round_target(start, -14_554_000)
+    store.close_round(start, start + 400)
+    assert build_snapshot(store, NOW).round_length_s == 201
 
 
 def test_a_failed_refresh_keeps_the_previous_snapshot(caplog):

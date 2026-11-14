@@ -66,7 +66,6 @@ import numpy as np
 
 from quip_solver_dwave import qpp
 from quip_solver_dwave.budget import usage_db_from_backend_toml
-from quip_solver_dwave.regime_io import atomic_savez
 
 logger = logging.getLogger(__name__)
 
@@ -364,6 +363,44 @@ class Trial:
         }
 
 
+def _pack_spins(spins: np.ndarray) -> np.ndarray:
+    """±1 rows as bits, one row of bytes per read; a set bit is +1."""
+    return np.packbits(np.atleast_2d(spins) > 0, axis=1)
+
+
+def _save_record(path: Path, **arrays: Any) -> None:
+    """Write an uncompressed npz through a temp file in the same directory, then replace.
+
+    Packed spins are already at one bit each, and deflate on 48 chip reads
+    costs about 25 ms of worker time for a larger file.
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with tmp.open("wb") as handle:
+            np.savez(handle, **arrays)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def read_record(path: Path) -> dict[str, Any]:
+    """One record as ``raw_spins``, ``raw_energies``, ``final_spins``, ``final_energies`` and ``summary``."""
+    with np.load(path) as z:
+        n = int(z["n_spins"])
+
+        def spins(bits: np.ndarray) -> np.ndarray:
+            rows = np.unpackbits(bits, axis=1, count=n).astype(np.int8)
+            return rows * 2 - 1
+
+        return {
+            "raw_spins": spins(z["raw_bits"]),
+            "raw_energies": z["raw_energies"],
+            "final_spins": spins(z["final_bits"]),
+            "final_energies": z["final_energies"],
+            "summary": json.loads(str(z["summary"])),
+        }
+
+
 class TrialStore:
     """``<records>/<day>/<job>.<salt>.npz`` with every state, and ``<day>/trials.jsonl``.
 
@@ -425,11 +462,12 @@ class TrialStore:
         try:
             path.parent.mkdir(exist_ok=True)
             before = path.stat().st_size if path.exists() else 0
-            atomic_savez(
+            _save_record(
                 path,
-                raw_spins=trial.raw_spins,
+                n_spins=np.int64(trial.raw_spins.shape[1]),
+                raw_bits=_pack_spins(trial.raw_spins),
                 raw_energies=trial.raw_energies,
-                final_spins=trial.final_spins,
+                final_bits=_pack_spins(trial.final_spins),
                 final_energies=trial.final_energies,
                 summary=np.str_(json.dumps(trial.summary())),
             )

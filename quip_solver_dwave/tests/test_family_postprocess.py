@@ -255,8 +255,7 @@ def _trial_lines(records) -> List[str]:
 
 def _record(processor: Postprocessor, trial):
     assert processor.store is not None
-    with np.load(processor.store.path(trial)) as z:
-        return {k: z[k] for k in z.files}
+    return postprocess.read_record(processor.store.path(trial))
 
 
 def test_a_successful_trial_keeps_every_raw_read_and_the_final_state(tmp_path, fake_qpp):
@@ -275,7 +274,7 @@ def test_a_successful_trial_keeps_every_raw_read_and_the_final_state(tmp_path, f
     assert rec["raw_energies"].tolist() == problem.energies_milli(reads).tolist()
     assert rec["final_spins"].shape == (1, len(problem.nodes))
     assert rec["final_energies"].tolist() == problem.energies_milli(rec["final_spins"]).tolist()
-    summary = json.loads(str(rec["summary"]))
+    summary = rec["summary"]
     assert summary["outcome"] == OK and summary["policy"] == "qpp-race768/1"
     assert summary["nonce"] == problem.nonce.hex()
     line = json.loads(_trial_lines(tmp_path / "records")[-1])
@@ -326,7 +325,7 @@ def test_a_failed_processor_is_a_failed_trial_with_its_raw_reads(tmp_path, fake_
     rec = _record(processor, trial)
     assert (rec["raw_spins"] == reads).all()
     assert rec["final_spins"].size == 0
-    assert json.loads(str(rec["summary"]))["outcome"] == FAILED
+    assert rec["summary"]["outcome"] == FAILED
 
 
 def test_a_stop_kills_the_processor_and_leaves_an_incomplete_trial(tmp_path, fake_qpp, monkeypatch):
@@ -604,7 +603,7 @@ def test_a_failing_disk_never_raises(tmp_path, monkeypatch):
     def broken(*args, **kwargs):
         raise OSError("no space left on device")
 
-    monkeypatch.setattr(postprocess, "atomic_savez", broken)
+    monkeypatch.setattr(postprocess, "_save_record", broken)
     _raw(store, 0, 86400.0)
     assert store.dropped == 1
 

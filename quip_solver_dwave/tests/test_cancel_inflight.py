@@ -8,6 +8,8 @@ has already thrown away, so the miner asks D-Wave to drop it.
 from __future__ import annotations
 
 import threading
+from concurrent.futures import CancelledError, ThreadPoolExecutor, TimeoutError
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -299,6 +301,118 @@ def test_a_cancelled_problem_is_billed_the_conservative_estimate():
         _one_qubit_job(s, b"\x11")
 
     assert s.drain_unobserved_access_us() == 46_000
+
+
+def test_a_cancelled_queued_submit_never_reaches_the_encoder_or_the_device(monkeypatch):
+    s = _real_mode_sampler(CancelledFuture())
+    s._observe_access_us(46_000)
+    s._submit_pool.shutdown()
+    s._submit_pool = ThreadPoolExecutor(max_workers=1)
+    release, queued = threading.Event(), threading.Event()
+    blocker = s._submit_pool.submit(release.wait, 5)
+    submit = s._submit_pool.submit
+
+    def track_submit(*args, **kwargs):
+        future = submit(*args, **kwargs)
+        queued.set()
+        return future
+
+    monkeypatch.setattr(s._submit_pool, "submit", track_submit)
+    plans = []
+    graph_plan = s._graph_plan
+
+    def track_plan(*args):
+        plans.append(True)
+        return graph_plan(*args)
+
+    monkeypatch.setattr(s, "_graph_plan", track_plan)
+    with ThreadPoolExecutor(max_workers=1) as callers:
+        result = callers.submit(_one_qubit_job, s, b"queued")
+        try:
+            assert queued.wait(5)
+            s.cancel_inflight([b"queued"])
+        finally:
+            release.set()
+            blocker.result(5)
+        try:
+            with pytest.raises(Exception) as error:
+                result.result(5)
+            assert not plans
+            assert not getattr(s, "submitted")
+            assert isinstance(error.value, CancelledError)
+            assert s.drain_unobserved_access_us() == 0
+            assert b"queued" not in s._cancel_pending
+        finally:
+            s.close()
+
+
+def test_a_cancel_during_encoding_drops_the_body_before_the_sdk_queue(monkeypatch):
+    import dwave.cloud.computation
+
+    s = _real_mode_sampler(CancelledFuture())
+    s._observe_access_us(46_000)
+    submitted = []
+    getattr(s.sampler, "solver").client = SimpleNamespace(_submit=lambda *args: submitted.append(args))
+    # Exercise the real hand-off, but keep all SDK work offline.
+    monkeypatch.setattr(s, "_submit_encoded", OceanSampler._submit_encoded.__get__(s))
+    monkeypatch.setattr(dwave.cloud.computation, "Future", lambda **kwargs: CancelledFuture())
+    graph_plan = s._graph_plan
+
+    def cancel_while_encoding(*args):
+        plan = graph_plan(*args)
+        s.cancel_inflight([b"encoding"])
+        return plan
+
+    monkeypatch.setattr(s, "_graph_plan", cancel_while_encoding)
+    try:
+        with pytest.raises(Exception) as error:
+            _one_qubit_job(s, b"encoding")
+        assert not submitted
+        assert isinstance(error.value, CancelledError)
+        assert s.drain_unobserved_access_us() == 0
+        assert b"encoding" not in s._cancel_pending
+    finally:
+        s.close()
+
+
+def test_registration_and_sdk_handoff_are_atomic_with_cancellation(monkeypatch):
+    import dwave.cloud.computation
+
+    s = _real_mode_sampler(CancelledFuture())
+    registered, release, cancelling = threading.Event(), threading.Event(), threading.Event()
+    future = FakeCloudFuture()
+    submitted = []
+    solver = getattr(s.sampler, "solver")
+    solver.client = SimpleNamespace(_submit=lambda *args: submitted.append(future.cancelled))
+    monkeypatch.setattr(dwave.cloud.computation, "Future", lambda **kwargs: future)
+    register = s._register_inflight
+
+    def held_registration(*args):
+        accepted = register(*args)
+        registered.set()
+        assert release.wait(5)
+        return accepted
+
+    def cancel():
+        cancelling.set()
+        s.cancel_inflight([b"handoff"])
+
+    monkeypatch.setattr(s, "_register_inflight", held_registration)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        handing_off = pool.submit(OceanSampler._submit_encoded, s, solver, b"body", b"handoff")
+        try:
+            assert registered.wait(5)
+            cancellation = pool.submit(cancel)
+            assert cancelling.wait(5)
+            # The registry must not expose a Future before its body is queued.
+            with pytest.raises(TimeoutError):
+                cancellation.result(timeout=0.1)
+        finally:
+            release.set()
+            handing_off.result(timeout=5)
+            s.close()
+    assert submitted == [False]
+    assert future.cancelled
 
 
 def test_draining_the_unobserved_charge_clears_it():

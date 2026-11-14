@@ -100,6 +100,8 @@ def test_crossing_into_a_new_period_reloads_from_the_ledger():
     assert pacer.decide(MID_PERIOD).spent_us == 900_000
 
     next_period = ts(2026, 10, 19)
+    assert not pacer.decide(next_period).participate
+    _finish_refresh(pacer)
     decision = pacer.decide(next_period)
 
     assert decision.spent_us == 0.0
@@ -172,6 +174,8 @@ def test_another_writers_spend_is_picked_up_within_the_refresh_window():
     assert pacer.decide(MID_PERIOD).spent_us == 0.0
     # Past it, the durable record wins.
     later = MID_PERIOD + SPEND_REFRESH_S + 0.1
+    pacer.decide(later)
+    _finish_refresh(pacer)
     assert pacer.decide(later).spent_us == 700_000
 
 
@@ -203,12 +207,17 @@ def test_a_refresh_during_an_in_flight_write_does_not_lose_the_charge():
     # Refresh while the ledger still reads 0.
     later = MID_PERIOD + SPEND_REFRESH_S + 0.1
     during = pacer.decide(later).spent_us
+    _finish_refresh(pacer)
+    after_refresh = pacer.decide(later).spent_us
     release.set()
     t.join(timeout=2)
+    _finish_refresh(pacer)
 
     assert during == 43_200, (
         f"a refresh mid-write lost the charge: saw {during}, expected 43200"
     )
+    assert after_refresh == 43_200
+    assert pacer.decide(later).spent_us == 43_200
 
 
 def test_a_clock_that_steps_backwards_does_not_wedge_the_cache():
@@ -220,5 +229,67 @@ def test_a_clock_that_steps_backwards_does_not_wedge_the_cache():
     UsageLedger.record(led, 700_000, now=MID_PERIOD)
 
     pacer.decide(MID_PERIOD - 60)  # clock jumps back
+    _finish_refresh(pacer)
     forward = MID_PERIOD + SPEND_REFRESH_S + 0.1
+    pacer.decide(forward)
+    _finish_refresh(pacer)
     assert pacer.decide(forward).spent_us == 700_000
+
+
+def _finish_refresh(pacer):
+    future = getattr(pacer, "_refresh_future", None)
+    if future is not None:
+        future.result(timeout=2)
+
+
+def test_an_expired_cache_never_waits_behind_a_ledger_write():
+    from concurrent.futures import ThreadPoolExecutor
+    from quip_solver_dwave.budget import SPEND_REFRESH_S
+
+    pacer, led = _pacer()
+    pacer.decide(MID_PERIOD)
+    # The session holds state_lock when it calls decide. A billing worker can
+    # keep the ledger lock for an arbitrary fsync, including during refresh.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        led._lock.acquire()
+        try:
+            decision = pool.submit(pacer.decide, MID_PERIOD + SPEND_REFRESH_S + 1)
+            assert decision.result(timeout=0.5).spent_us == 0
+        finally:
+            led._lock.release()
+            _finish_refresh(pacer)
+
+
+def test_rollover_queues_the_new_period_behind_an_old_refresh():
+    from quip_solver_dwave.budget import SPEND_REFRESH_S
+
+    pacer, led = _pacer()
+    pacer.decide(MID_PERIOD)
+    next_period = ts(2026, 10, 19)
+    UsageLedger.record(led, 700_000, now=next_period)
+    with led._lock:
+        pacer.decide(MID_PERIOD + SPEND_REFRESH_S + 1)
+        assert not pacer.decide(next_period).participate
+    _finish_refresh(pacer)
+    assert pacer.decide(next_period).spent_us == 700_000
+
+
+def test_a_failed_refresh_holds_spending_until_a_read_succeeds(monkeypatch, caplog):
+    from quip_solver_dwave.budget import SPEND_REFRESH_S
+
+    pacer, led = _pacer()
+    pacer.decide(MID_PERIOD)
+    read = led.spent_us_since
+
+    def unavailable(start):
+        raise OSError("ledger unavailable")
+
+    monkeypatch.setattr(led, "spent_us_since", unavailable)
+    later = MID_PERIOD + SPEND_REFRESH_S + 1
+    pacer.decide(later)
+    _finish_refresh(pacer)
+    monkeypatch.setattr(led, "spent_us_since", read)
+    assert not pacer.decide(later).participate
+    _finish_refresh(pacer)
+    assert pacer.decide(later).participate
+    assert "usage refresh failed: ledger unavailable" in caplog.text

@@ -13,6 +13,7 @@ import queue
 import re
 import threading
 import time
+import tracemalloc
 from typing import Callable, Dict, List, Optional, cast
 
 from dwave.graphs import zephyr_graph
@@ -22,7 +23,7 @@ import pytest
 from quip_solver_core import families, lease as lease_sdk, miner_pb2, scoring, wire
 
 from quip_solver_dwave import leases, session_loop
-from quip_solver_dwave.leases import LeaseRejected, LeaseTopology, admit_lease
+from quip_solver_dwave.leases import LeaseRejected, LeaseTopology, SaltProblem, admit_lease
 from quip_solver_dwave.ocean import OceanSampler, SampleResult
 from quip_solver_dwave.usage import UsageLedger
 
@@ -271,6 +272,45 @@ def test_a_later_topology_does_not_change_an_admitted_lease():
     after = admitted.problem(2)
     assert before is not None and after is not None
     assert before.h_milli.tolist() == after.h_milli.tolist()
+
+
+def test_scoring_a_batch_keeps_spin_workspaces_compact():
+    # At 48 reads and full chip size, widening both gathered endpoints and
+    # their product to int64 costs about 48 MB per call, on every job worker.
+    n = 256
+    positions = np.column_stack(np.triu_indices(n, k=1))
+    problem = SaltProblem(
+        index=0, salt=b"", nonce=b"", nodes=np.arange(n),
+        h_milli=np.zeros(n, dtype=np.int64), positions=positions,
+        j_milli=np.full(len(positions), 1000, dtype=np.int64),
+    )
+    spins = np.ones((48, n), dtype=np.int8)
+    tracemalloc.start()
+    try:
+        energies = problem.energies_milli(spins)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert energies.tolist() == [len(positions) * 1000] * 48
+    # Allow four bytes per read/coupler, plus fixed allocation overhead.
+    # This bounds memory independently of machine speed or scheduler load.
+    assert peak < 4 * 48 * len(positions) + 1_000_000
+
+
+@pytest.mark.parametrize("layout", ["C", "F", "strided"])
+def test_batch_scoring_accumulates_large_coefficients_exactly(layout):
+    problem = SaltProblem(
+        index=0, salt=b"", nonce=b"", nodes=np.array([8, 2, 7]),
+        h_milli=np.array([2**31 - 1, -(2**31), 17], dtype=np.int64),
+        positions=np.array([[0, 1], [1, 2], [0, 2]]),
+        j_milli=np.array([2**31 - 1, -(2**31), 23], dtype=np.int64),
+        offset_milli=31,
+    )
+    spins = np.array([[1, 1, 1], [-1, 1, -1]], dtype=np.int8, order="F" if layout == "F" else "C")
+    if layout == "strided":
+        spins = np.repeat(spins, 2, axis=1)[:, ::2]
+    assert problem.energies_milli(spins).tolist() == [69, -4294967257]
+    assert problem.energies_milli(spins[:0]).shape == (0,)
 
 
 # -- the session, against a fake device ----------------------------------------
@@ -584,6 +624,67 @@ def test_a_cancel_closes_the_lease_at_once_and_bills_the_late_salt(monkeypatch, 
     assert device.keys[1] in device.cancelled
     # Both salts annealed and both are billed, the dropped one included.
     assert UsageLedger(str(tmp_path / "usage.db")).spent_us_since(0.0) == 2 * ACCESS_US
+
+
+def test_a_cancel_during_generation_drops_the_salt_before_sampling(monkeypatch, tmp_path):
+    device = FakeDevice()
+    generating, release = threading.Event(), threading.Event()
+    problem = leases.AdmittedLease.problem
+
+    def held_problem(self, index):
+        if index == 1:
+            generating.set()
+            assert release.wait(5)
+        return problem(self, index)
+
+    monkeypatch.setattr(leases.AdmittedLease, "problem", held_problem)
+    coord = Coordinator(monkeypatch, device)
+    ring = ring_topology()
+    coord.start(ring, target(), depth=1, toml=_budget_toml(tmp_path))
+    coord.send(cancel=miner_pb2.Cancel(max_generation=1))
+    coord.send(job=lease_job(generator(ring, count=3)))
+    try:
+        assert generating.wait(5)
+        coord.send(cancel=miner_pb2.Cancel(max_generation=GENERATION))
+        coord.wait_for(lambda sent: any(
+            m.WhichOneof("msg") == "status" and m.status.abandoned_generation == GENERATION
+            for m in sent
+        ))
+    finally:
+        release.set()
+        coord.finish()
+    assert device.calls == [0]
+    assert UsageLedger(str(tmp_path / "usage.db")).spent_us_since(0.0) == ACCESS_US
+
+
+def test_cancel_publishes_its_watermark_while_a_worker_holds_the_budget_gate(monkeypatch, tmp_path):
+    deciding, release = threading.Event(), threading.Event()
+    on_job = session_loop.ParticipationGate.on_job
+
+    def held_decision(self, now):
+        if threading.current_thread().name.startswith("dwave-lease-"):
+            deciding.set()
+            assert release.wait(5)
+        return on_job(self, now)
+
+    monkeypatch.setattr(session_loop.ParticipationGate, "on_job", held_decision)
+    device = FakeDevice()
+    coord = Coordinator(monkeypatch, device)
+    ring = ring_topology()
+    coord.start(ring, target(), toml=_budget_toml(tmp_path))
+    coord.send(cancel=miner_pb2.Cancel(max_generation=1))
+    coord.send(job=lease_job(generator(ring)))
+    try:
+        assert deciding.wait(5)
+        coord.send(cancel=miner_pb2.Cancel(max_generation=GENERATION))
+        coord.wait_for(lambda sent: any(
+            m.WhichOneof("msg") == "status" and m.status.abandoned_generation == GENERATION
+            for m in sent
+        ), timeout=0.5)
+    finally:
+        release.set()
+        coord.finish()
+    assert not device.calls
 
 
 def test_a_passed_deadline_closes_the_lease_like_a_cancel(monkeypatch):

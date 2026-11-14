@@ -18,7 +18,7 @@ import logging
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
@@ -338,7 +338,7 @@ class OceanSampler:
         # a Cancel inside that window has nothing to call yet, and that window
         # is exactly when cancelling saves the most access time.
         self._cancel_pending: set = set()
-        self._inflight_lock = threading.Lock()
+        self._inflight_lock = threading.RLock()
         # Access time D-Wave charged for problems whose timing we never saw.
         # See _charge_unobserved for why this exists and why it over-counts.
         self._unobserved_access_us = 0
@@ -688,7 +688,7 @@ class OceanSampler:
             "reinitialize_state": True,
         }
 
-    def _register_inflight(self, key: bytes, future: Any) -> None:
+    def _register_inflight(self, key: bytes, future: Any) -> bool:
         """Record a live cloud problem, or drop it if a Cancel beat it here."""
         with self._inflight_lock:
             if key in self._cancel_pending:
@@ -701,6 +701,8 @@ class OceanSampler:
                 doomed = None
         if doomed is not None:
             doomed.cancel()
+            return False
+        return True
 
     def _release_inflight(self, key: bytes) -> None:
         """Forget a problem that has finished, cancelled or not."""
@@ -784,6 +786,11 @@ class OceanSampler:
         auto_scale: Optional[bool] = None,
     ):
         """Run on a pool thread: build/submit only; do NOT touch .sampleset."""
+        with self._inflight_lock:
+            if cancel_key is not None and cancel_key in self._cancel_pending:
+                # Still local: skip both encoding and submission, and bill
+                # nothing. sample() releases the pending note on this failure.
+                raise CancelledError("cancelled before submit")
         solver = getattr(self.sampler, "solver", None)
         params: Dict[str, Any] = {"num_reads": num_reads}
         # The proto's `anneal_time_us` and SAPI's schedule times are both
@@ -852,9 +859,17 @@ class OceanSampler:
         # Registered before the submit, not after: _submit hands the problem to
         # the client's own threads, so the id can come back before this line
         # would otherwise run.
-        if cancel_key is not None:
-            self._register_inflight(cancel_key, computation)
-        solver.client._submit(Present(result=body), computation)
+        # Registration and the SDK's nonblocking queue put are one hand-off.
+        # Otherwise Cancel can remove the Future between them, and this thread
+        # would still submit its body after resuming. The registry is reentrant
+        # so _register_inflight also remains safe when used on its own.
+        with self._inflight_lock:
+            if cancel_key is not None:
+                if not self._register_inflight(cancel_key, computation):
+                    # Cancel may also arrive while the body is being encoded.
+                    # Cancelling a Future alone still queues its body at SAPI.
+                    raise CancelledError("cancelled before SDK submission")
+            solver.client._submit(Present(result=body), computation)
         return computation
 
     @staticmethod

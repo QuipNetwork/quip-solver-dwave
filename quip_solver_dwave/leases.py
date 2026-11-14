@@ -169,9 +169,15 @@ class SaltProblem:
 
     def energies_milli(self, spins: np.ndarray) -> np.ndarray:
         """The exact energy of each ±1 row of ``spins``, offset included (FAM-33)."""
-        s = np.asarray(spins, dtype=np.int64)
+        s = np.asarray(spins, dtype=np.int8)
         u, v = self.positions[:, 0], self.positions[:, 1]
-        return s @ self.h_milli + (s[:, u] * s[:, v]) @ self.j_milli + self.offset_milli
+        # Spin products stay +/-1. Widen only the accumulation, not the two
+        # endpoint gathers and their product (about 48 MB for 48 chip reads).
+        # einsum also avoids the strided integer matmul over the gathered rows.
+        quadratic = np.einsum(
+            "ij,j->i", s[:, u] * s[:, v], self.j_milli, dtype=np.int64
+        )
+        return s @ self.h_milli + quadratic + self.offset_milli
 
 
 @dataclass(frozen=True)

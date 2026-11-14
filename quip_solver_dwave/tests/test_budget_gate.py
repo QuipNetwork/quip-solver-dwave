@@ -134,8 +134,13 @@ def test_recovery_waits_for_the_reset_and_a_boundary():
     assert gate.on_qblock_boundary(101, later) is not None
     assert gate.participating is False
 
-    # The first boundary after the reset does.
-    result = gate.on_qblock_boundary(102, ts(2026, 10, 10))
+    # Until the new period is read, its spend is unknown and the gate holds.
+    now = ts(2026, 10, 10)
+    result = gate.on_qblock_boundary(102, now)
+    assert result is not None and result.allowed is False
+    assert pacer._refresh_future is not None
+    pacer._refresh_future.result(timeout=2)
+    result = gate.on_qblock_boundary(103, now)
     assert result is not None and result.allowed is True
     assert gate.participating is True
 

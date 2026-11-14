@@ -114,8 +114,11 @@ When the records pass `records_max_gb`, the miner deletes the oldest day.
 The miner never deletes the current day. When the current day alone passes the limit, the miner writes no more records that day, and it logs the count.
 A record that the miner cannot write never stops a result.
 
-One record of 48 reads on 4,560 qubits is about 36 kB and takes about 40 ms to write.
-At 2 salts each second, one day of records is about 6 GB.
+One record of 48 reads on 4,560 qubits is about 28 kB.
+At 2 salts each second, one day of records is about 5 GB.
+
+The file is an uncompressed `npz`. It holds each spin as one bit, and a set bit is +1.
+`quip_solver_dwave.postprocess.read_record` reads a file and returns the fields below, with the spins as rows of ±1.
 
 | Field | Content |
 |---|---|

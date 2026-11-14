@@ -835,7 +835,8 @@ def _unix_target(uri: str) -> str:
     return f"unix://{path}"
 
 
-def run_session(
+# The existing nested protocol loop exceeds pyright's control-flow limit.
+def run_session(  # pyright: ignore[reportGeneralTypeIssues]
     coordinator_uri: str,
     miner_id: str,
     sampler: OceanSampler,
@@ -900,6 +901,9 @@ def run_session(
     # Pipeline: up to queue_depth QPU submissions in flight (overlaps cloud RTT).
     # jobs_done + pending_budget are shared with worker threads -> guard them.
     state_lock = threading.Lock()
+    # Publishing a stop must never wait for a budget decision. Registration
+    # shares this short lock so the cancellation sweep cannot miss a new salt.
+    cancel_lock = threading.Lock()
     # What the QPU is chewing on right now, so a Cancel can reach it.
     inflight = InflightJobs()
     tally = CancelTally()
@@ -1189,7 +1193,13 @@ def run_session(
             # The salt's own cancel key, filed under the lease generation, so
             # a Cancel reaches every salt on the QPU the way it reaches a job.
             key = admitted.job_id + b"#" + problem.index.to_bytes(8, "little")
-            inflight.add(key, admitted.generation)
+            # Drawing and waiting for a worker can outlive the round. Check
+            # again here, and register under the watermark's lock: Cancel must
+            # either see this key or stop it before it reaches the sampler.
+            with cancel_lock:
+                if leases_aborted.is_set() or _is_abandoned(admitted.generation, cancel_watermark):
+                    return None
+                inflight.add(key, admitted.generation)
             if recorder is not None:
                 recorder.job_started(time.time())
             started = time.monotonic()
@@ -1219,7 +1229,7 @@ def run_session(
                         exc,
                     )
                     raise StopDrawing from exc
-                with state_lock:
+                with cancel_lock:
                     cancelled = _is_abandoned(admitted.generation, cancel_watermark)
                 if cancelled:
                     # A Cancel dropped it on SAPI: expected, and billed below.
@@ -1246,7 +1256,7 @@ def run_session(
             reach.observe(
                 time.time(), int(energies.min()) if energies.size else None
             )
-            with state_lock:
+            with cancel_lock:
                 wasted = _is_abandoned(admitted.generation, cancel_watermark)
             if wasted:
                 tally.missed()
@@ -1282,7 +1292,7 @@ def run_session(
             return spins, sampler_meta(result, num_sweeps)
 
         def stopped() -> bool:
-            with state_lock:
+            with cancel_lock:
                 return _is_abandoned(admitted.generation, cancel_watermark)
 
         def may_draw() -> bool:
@@ -1709,7 +1719,7 @@ def run_session(
                         gate, state_lock, out_q, cancel_watermark + 1, queue_depth
                     )
             elif which == "job":
-                with state_lock:
+                with cancel_lock:
                     cancelled = _is_abandoned(cm.job.generation, cancel_watermark)
                 is_lease = cm.job.kind == miner_pb2.ISING_GENERATE
                 if cancelled and is_lease:
@@ -1817,16 +1827,17 @@ def run_session(
                 # reply reports the real watermark, not just an ack flag, so the
                 # coordinator can see the current cancel point outside a Cancel
                 # round-trip too (Ping reports it the same way, below).
-                with state_lock:
+                with cancel_lock:
                     cancel_watermark = max(cancel_watermark, cm.cancel.max_generation)
-                    done = jobs_done
                     watermark = cancel_watermark
-                out_q.put(_status(miner_id, done, abandoned=watermark))
+                    doomed = inflight.abandoned(watermark)
+                # jobs_done is a diagnostic snapshot. Do not take state_lock
+                # just to read it: a busy gate must not delay the stop or ACK.
+                out_q.put(_status(miner_id, jobs_done, abandoned=watermark))
                 # Every job of an abandoned generation still on the QPU is
                 # access time buying a round the coordinator has thrown away.
                 # Ask D-Wave to drop them; it refunds only the ones it has not
                 # started annealing, which is what the tally measures.
-                doomed = inflight.abandoned(watermark)
                 if doomed:
                     live = sampler.cancel_inflight(doomed)
                     tally.requested(len(doomed))

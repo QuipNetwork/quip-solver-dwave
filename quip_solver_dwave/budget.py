@@ -28,6 +28,7 @@ import calendar
 import logging
 import threading
 import tomllib
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -46,9 +47,8 @@ DEFAULT_USAGE_DB = "/data/qpu-usage.db"
 # the durable record again. The per-job participation check runs on the
 # session-loop thread under the dispatch lock, so a SQLite read there stalls
 # Cancel, Job and Ping handling; at the chip's ceiling of ~23 jobs/s this turns
-# 23 reads a second into one every few seconds. The window is what another
-# writer sharing usage_db can add without this pacer seeing it, which at that
-# same ceiling is about a second of QPU time against a monthly quota.
+# 23 reads a second into one background read every few seconds. The window,
+# plus the read latency, bounds how long a sibling's spend can be unseen.
 SPEND_REFRESH_S = 5.0
 
 # Config keys the dwave backend recognizes in Configure.backend_toml. Anything
@@ -186,6 +186,11 @@ class BudgetPacer:
         self._cached_period_start: Optional[float] = None
         self._cached_spent_us = 0.0
         self._cached_at = 0.0
+        self._cache_ready = False
+        self._refresh_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="dwave-budget"
+        )
+        self._refresh_future: Optional[Future[None]] = None
 
     def _spent_us(self, period_start: float, now: float) -> float:
         """This period's billed access time, from memory where possible.
@@ -204,28 +209,54 @@ class BudgetPacer:
         little longer, which is the safe direction.
         """
         with self._spend_lock:
-            fresh = (
-                self._cached_period_start == period_start
-                and 0.0 <= now - self._cached_at < SPEND_REFRESH_S
-            )
-            if fresh:
-                return self._cached_spent_us
-        # Read outside the lock so a slow volume cannot block a billing.
-        spent = self.ledger.spent_us_since(period_start)
-        with self._spend_lock:
-            if self._cached_period_start != period_start:
-                # A new period starts from whatever the record holds, which is
-                # also how a restart mid-period inherits a previous run.
+            initial = self._cached_period_start is None
+            period_changed = self._cached_period_start != period_start
+            if period_changed:
                 self._cached_period_start = period_start
-                self._cached_spent_us = spent
-            else:
-                # Same period: another writer may have added to the record,
-                # and this pacer may have billed since the read began. Take
-                # the larger, because under-counting hands out headroom the
-                # QPU has already spent.
-                self._cached_spent_us = max(self._cached_spent_us, spent)
-            self._cached_at = now
+                self._cached_spent_us = 0.0
+                self._cache_ready = False
+            fresh = self._cache_ready and 0.0 <= now - self._cached_at < SPEND_REFRESH_S
+            if not fresh and (
+                period_changed or self._refresh_future is None or self._refresh_future.done()
+            ):
+                # decide() runs under the dispatch lock. Even an occasional
+                # ledger read there can queue behind every billing fsync,
+                # blocking Cancel while workers keep spending on dead work.
+                # Reuse the startup worker: starting a thread under this lock
+                # also waits for the GIL when many native draws compete for it.
+                self._refresh_future = self._refresh_pool.submit(
+                    self._refresh_spend, period_start, now
+                )
+            if not initial:
+                # On rollover (or a failed read), hold spending until the new
+                # period is known. Never treat an unread ledger as zero spend.
+                return (
+                    self._cached_spent_us if self._cache_ready
+                    else self.config.budget_seconds * 1e6
+                )
+        # Startup hydrates the cache before the session accepts any work.
+        assert self._refresh_future is not None
+        self._refresh_future.result()
+        with self._spend_lock:
+            if not self._cache_ready:
+                raise BudgetUnavailable("cannot read the QPU usage ledger")
             return self._cached_spent_us
+
+    def _refresh_spend(self, period_start: float, now: float) -> None:
+        try:
+            spent = self.ledger.spent_us_since(period_start)
+            with self._spend_lock:
+                if self._cached_period_start == period_start:
+                    # Local billing leads the durable write, so the read must
+                    # never lower the total while that write is in flight.
+                    self._cached_spent_us = max(self._cached_spent_us, spent)
+                    self._cached_at = now
+                    self._cache_ready = True
+        except Exception as exc:  # noqa: BLE001 - refuse spend until a read succeeds
+            with self._spend_lock:
+                if self._cached_period_start == period_start:
+                    self._cache_ready = False
+            logger.warning("budget: usage refresh failed: %s", exc)
 
     def decide(self, now: float) -> ParticipationDecision:
         """Evaluate spend against the flat allowance line at ``now``."""

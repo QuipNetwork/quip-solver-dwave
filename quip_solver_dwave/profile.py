@@ -302,7 +302,12 @@ def build_snapshot(
     lengths = [
         float(r["end_ts_s"] - r["start_ts_s"])
         for r in store.rounds(since_ts=since)
-        if r["source"] == "live" and r["end_ts_s"] is not None and r["end_ts_s"] > r["start_ts_s"]
+        # A pending-proof pause also opens an interval at Cancel, but only
+        # a mineable round receives SetTarget. This marker exists in old DBs,
+        # including rounds sat out, so neither a migration nor a length cutoff
+        # is needed. Filter before limiting the sample to survive Cancel bursts.
+        if r["source"] == "live" and r["target_milli"] is not None
+        and r["end_ts_s"] is not None and r["end_ts_s"] > r["start_ts_s"]
     ][:ROUND_LENGTH_SAMPLE]
     round_length = _median(lengths) if lengths else DEFAULT_ROUND_LENGTH_S
 

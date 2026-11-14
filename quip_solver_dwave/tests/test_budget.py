@@ -172,6 +172,9 @@ def test_the_reset_clears_last_periods_spend():
     assert p.decide(ts(2026, 10, 8)).participate is False
     # One day into the new period the old spend is out of scope and the fresh
     # allowance has started accruing.
+    assert not p.decide(ts(2026, 10, 10)).participate
+    assert p._refresh_future is not None
+    p._refresh_future.result(timeout=2)
     after = p.decide(ts(2026, 10, 10))
     assert after.spent_us == 0.0
     assert after.participate is True
@@ -204,7 +207,7 @@ def test_even_distribution_holds_over_a_simulated_month():
     gap = 0.0
     while now < end:
         if p.decide(now).participate:
-            led.record(spend_per_qblock_us, now=now)
+            p.record_access_time(spend_per_qblock_us, now)
             participated += 1
             gap = 0.0
         else:
