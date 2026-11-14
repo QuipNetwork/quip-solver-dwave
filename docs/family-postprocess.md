@@ -2,7 +2,9 @@
 
 The miner can postprocess the QPU reads of a family salt before it reports them.
 The postprocess runs on the host, after the salt's QPU call, and adds its final states to the salt's `Result`.
-Every raw read stays in that `Result` and in a trial record on disk.
+Every raw read stays in that `Result` and in a record on disk.
+The miner records the reads of every salt, with or without a postprocess.
+Only a salt whose raw reads leave the target in reach goes to the processor.
 
 The same path serves family leases and explicit family jobs (DW-1, QUI-2042).
 An explicit job reports the energy of the plain model, without the offset of the instance (FAM-64).
@@ -14,18 +16,20 @@ The postprocess runs by default.
 When `Configure.backend_toml` has no `[postprocess]` table, the miner uses these settings:
 
 - `quip/twisted-ice-dimer` gets the policy `qpp-race2048-repair32/1`.
-- The miner writes no trial record.
+- The records go to the directory `qpu-reads` beside the usage database.
 - The number of processors that run at once is the number of processors the miner may use minus 1, with a minimum of 1 and a maximum of 4. A container `cpuset` limits that number.
 - At most 2 salts for each processor wait or run at once. A salt that arrives when that queue is full reports its raw reads at once, without a postprocess. The postprocess never delays results when the host is slower than the QPU.
 - If the miner does not find the processor binary, it logs a warning and reports raw reads alone.
 
-The line `postprocess = false` turns the postprocess off.
+The line `postprocess = false` turns the postprocess off. The miner still records the reads.
+
+The top-level key `records_max_gb` sets the most disk that the records use. The default is 20.
 
 A `[postprocess]` table replaces the default settings. A table sets no queue limit: every salt waits for its postprocess, so the host must keep up with the QPU.
 
 ```toml
 [postprocess]
-records = "/var/lib/quip/postprocess"   # required
+records = "/var/lib/quip/qpu-reads"     # default: qpu-reads beside the usage database
 threads = 1                             # processors that run at once, default 1
 "quip/twisted-ice-dimer" = "qpp-race768/1"
 ```
@@ -35,7 +39,7 @@ A family that the table does not name gets no postprocess.
 
 The session sends `Fatal` with exit code 64 at `Configure` when any of these conditions is true:
 
-- `records` is missing.
+- `records` is not a directory name.
 - `threads` is not a positive integer.
 - A policy name is unknown, or the policy is for another family.
 - The table names no family.
@@ -81,24 +85,51 @@ The other families use the postprocess binaries of quip-solver-cpu through a ses
 That work is bead `quip-miner-dwave-a43.4`.
 The miner generates no other family yet.
 
-## The trial record
+## The reach gate
 
-The miner writes trial records only when a `[postprocess]` table names `records`.
-Each postprocessed lease salt has a file `<records>/<job id hex>.<salt index>.npz`, and each explicit job has a file `<records>/<job id hex>.npz`.
-Each trial also adds a line to `<records>/trials.jsonl`.
+The best raw energy of a salt predicts its energy after the postprocess.
+In a test of 300 QPU calls on 10 model cells, the correlation was 0.85.
+The gain of the default policy was 12 to 23 units for each cell, with a standard deviation of about 2.5 units.
+
+The gain of a trial is its best raw energy minus its best final energy.
+The reach is the largest of the last 256 gains plus 3 units.
+A salt goes to the processor when its best raw energy minus the reach is at or below the target.
+Any other salt reports its raw reads at once and leaves a `raw` record.
+
+- Each family has its own gate.
+- The gate admits every salt until it knows 16 gains.
+- The gate admits every salt that has no target.
+- One salt in 64 that the gate rules out still goes to the processor, so the reach follows the models of the chain.
+- The gate compares the raw energies that the `Result` reports. For a family with an instance offset, the final energy leaves the offset out, so the gain includes it.
+
+## The record
+
+The miner writes one record for each salt that the QPU sampled.
+The directory is `[postprocess] records`, or `qpu-reads` beside the usage database.
+The records of one UTC day share the directory `<records>/<YYYYMMDD>/`.
+A lease salt has the file `<job id hex>.<salt index>.npz` there, and an explicit family job has the file `<job id hex>.npz`.
+The file `trials.jsonl` in the same directory gains one line for each record.
+
+When the records pass `records_max_gb`, the miner deletes the oldest day.
+The miner never deletes the current day. When the current day alone passes the limit, the miner writes no more records that day, and it logs the count.
+A record that the miner cannot write never stops a result.
+
+One record of 48 reads on 4,560 qubits is about 36 kB and takes about 40 ms to write.
+At 2 salts each second, one day of records is about 6 GB.
 
 | Field | Content |
 |---|---|
 | `raw_spins`, `raw_energies` | Every QPU read of the salt, and its exact energy in milli. |
 | `final_spins`, `final_energies` | The states that the processor returned, rescored on the host. Empty unless the outcome is `ok`. |
-| `summary` | JSON: job id, salt index, family, policy, processor, seed, outcome, read count, best raw and final energy, host seconds, processor seconds, and error. |
+| `summary` | JSON: job id, salt index, family, nonce, time, target, policy, processor, seed, outcome, read count, best raw and final energy, host seconds, processor seconds, and error. |
 
+The nonce rebuilds the model of the salt, together with the family parameters and the topology of the chain.
 The processor is `quip-dwave-qpp sha256:<digest>` of the binary that ran.
 The seed is the first 8 bytes of the salt nonce, read as a little-endian integer.
 The host seconds are the wall time of the processor run, process start included.
 The processor seconds are the time that the processor reports.
 
-The miner writes the file before the processor starts, with the raw reads and the outcome `incomplete`.
+For a salt that goes to the processor, the miner writes the file before the processor starts, with the raw reads and the outcome `incomplete`.
 The miner writes the file again when the processor ends.
 If the miner stops between the two writes, the file keeps the raw reads and the outcome `incomplete`.
 
@@ -107,6 +138,7 @@ If the miner stops between the two writes, the file keeps the raw reads and the 
 | `ok` | The processor finished, and the host rescore of its state matches its report. | The final state, then every raw read. |
 | `failed` | The processor exited with an error, wrote no report, or reported an energy that the host rescore does not match. The instance can also be outside the model. | Every raw read. |
 | `incomplete` | A stop came before the processor finished. | No `Result`, because the stop closed the lease. |
+| `raw` | No processor ran on the salt. The gate ruled it out, the queue was full, or the family has no postprocess. | Every raw read. |
 
 ## Billing
 
@@ -133,6 +165,6 @@ The lease sends its `LeaseDone` after the postprocess of every salt finishes, or
 
 ## Tests
 
-`quip_solver_dwave/tests/test_family_postprocess.py` covers the configuration, the model built from the metadata, each trial outcome, the stops, billing, and the QPU slot.
+`quip_solver_dwave/tests/test_family_postprocess.py` covers the configuration, the model built from the metadata, each trial outcome, the records and their disk limit, the reach gate, the stops, billing, and the QPU slot.
 A fake processor runs on every host.
 The test of the real race runs when `QUIP_DWAVE_QPP` names a built binary, as in the CI `conformance` job.

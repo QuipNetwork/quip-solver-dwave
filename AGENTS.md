@@ -318,11 +318,12 @@ The `--family` gate in `test_conformance.py` drives each one.
   generation gets a `LeaseDone` with zero salts.
 - **Postprocess.** The reads of a family salt go to the policy of its family
   (`postprocess.py`). By default the `qpp-race2048-repair32/1` policy runs on
-  the twisted-ice dimer salts and no trial record is written. A
-  `[postprocess]` table in `backend_toml` replaces the default, and
-  `postprocess = false` turns it off. The salt frees its QPU slot first, and
-  its host work runs on the executor of the postprocessor. A configured
-  trial keeps its raw reads on disk.
+  the twisted-ice dimer salts. A `[postprocess]` table in `backend_toml`
+  replaces the default, and `postprocess = false` turns it off. Only a salt
+  whose raw reads leave the target in reach goes to the processor
+  (`ReachGate`). The salt frees its QPU slot first, and its host work runs on
+  the executor of the postprocessor. The reads of every salt go to a record
+  on disk, in `qpu-reads` beside the usage database, up to `records_max_gb`.
   [docs/family-postprocess.md](docs/family-postprocess.md) gives the rules.
 - **Refunds.** The refund follows the same rules as the refill of a plain
   job. If the solver goes offline during the lease, the session parks the

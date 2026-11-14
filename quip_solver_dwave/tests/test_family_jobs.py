@@ -359,5 +359,6 @@ def test_an_explicit_job_goes_through_the_configured_postprocess(monkeypatch, tm
     # The fake processor returns the flip of the first read, ahead of the raw reads.
     assert (rows[0] == -rows[1]).all() and len(rows) == 4
     assert [s.energy_milli for s in result.solutions] == bound.energies_milli(rows).tolist()
-    assert (records / f"{b'family-1'.hex()}.npz").exists()
-    assert os.path.getsize(records / "trials.jsonl") > 0
+    assert list(records.glob(f"*/{b'family-1'.hex()}.npz"))
+    assert all(os.path.getsize(f) > 0 for f in records.glob("*/trials.jsonl"))
+    assert list(records.glob("*/trials.jsonl"))

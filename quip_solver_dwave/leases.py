@@ -455,7 +455,9 @@ class LeaseHooks:
     nothing when the session holds the credit back. ``sampled`` counts a
     sampled salt in ``Status.jobs_done``. ``postprocess``, when set, takes a
     salt's raw reads and a stop check, and returns final states to report
-    beside them, or ``None`` when its trial did not succeed.
+    beside them, or ``None`` when its trial did not succeed. ``in_reach``,
+    when set, says whether a salt's raw reads are worth the postprocess.
+    ``record``, when set, keeps the reads of a salt that had no postprocess.
     """
 
     sample_salt: Callable[[SaltProblem], Optional[Tuple[np.ndarray, miner_pb2.SamplerMeta]]]
@@ -469,6 +471,8 @@ class LeaseHooks:
     postprocess: Optional[
         Callable[[SaltProblem, np.ndarray, Callable[[], bool]], Optional[np.ndarray]]
     ] = None
+    in_reach: Optional[Callable[[SaltProblem, np.ndarray], bool]] = None
+    record: Optional[Callable[[SaltProblem, np.ndarray], None]] = None
 
 
 class _Ledger:
@@ -622,7 +626,11 @@ def run_lease(
             if outcome is None:
                 return
             spins, meta = outcome
-            if hooks.postprocess is not None and spins.shape[0]:
+            if (
+                hooks.postprocess is not None
+                and spins.shape[0]
+                and (hooks.in_reach is None or hooks.in_reach(problem, spins))
+            ):
                 run_host = host_submit or (lambda fn, *args: fn(*args))
                 handed_off = True
                 try:
@@ -636,6 +644,8 @@ def run_lease(
                 # The host queue is full: this salt reports its raw reads now.
                 handed_off = False
             report(problem, spins, meta)
+            if hooks.record is not None and spins.shape[0]:
+                hooks.record(problem, spins)
         except Exception:  # noqa: BLE001 - a salt must always be counted finished
             logger.exception("lease %s salt %d failed", lease.job_id.hex(), problem.index)
         finally:
