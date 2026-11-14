@@ -127,13 +127,25 @@ alone. Confidence label: measured, 17 instances.
 
 ### Next
 
-**C. Patch loop from the batch-seam state.** The 2026-11-11 study (Runs J and
-K) found that repeated patch calls on one deep state, each raced, are the
-best use of extra calls. A 25% patch gained 3.7 units over 8 calls, and a 50%
-patch gained 5.2. A Z(6) placement is a 25.7% patch at 19.6 ms. The loop
-starts from the raced batch-seam state with `anneal_tiled(initial=...)` and
-needs a loop around the race. The gap to close is about 34 units, which is
-more than Run K closed in 16 calls. Confidence label: directional.
+**C. Patch loop from the batch-seam state.** Measured on qblocks 366 to 371
+for 2.48 s of access. Each instance ran batch-seam and the race, then eight
+patch calls. Each call re-annealed one core or seam placement at random with
+the rest held, and raced the 48 swapped-in reads at 768 sweeps. A lower result
+replaced the state.
+
+| qblock | Above gate before the loop | Above gate after 8 calls | Calls that lowered the state |
+|---|---|---|---|
+| 366 | 32.1 | 30.2 | 4 |
+| 367 | 33.9 | 29.0 | 4 |
+| 368 | 33.2 | 31.6 | 4 |
+| 369 | 34.9 | 27.5 | 5 |
+| 370 | 30.9 | 29.1 | 3 |
+| 371 | 35.5 | 30.5 | 3 |
+
+The loop gains a mean 3.7 units in eight calls, the same as Run J measured
+for a 25% patch on system1. The gain has not levelled off at eight calls, but
+a gap near 30 units needs more than a longer loop. A faster postprocess for
+each call is the next lever. Confidence label: measured, 6 instances.
 
 **D. Pair system4 with system1.** System1 makes the deep state with one
 whole-graph call and the race. System4 then runs option C on that state at
