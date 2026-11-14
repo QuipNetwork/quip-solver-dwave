@@ -343,6 +343,11 @@ class OceanSampler:
         # See _charge_unobserved for why this exists and why it over-counts.
         self._unobserved_access_us = 0
         self._max_access_us = 0
+        # Problems per SAPI slot transport (see use_direct_transport); 0 keeps
+        # the cloud client's own submit, poll and load threads.
+        self._sapi_slots = 0
+        self._direct = None
+        self._direct_lock = threading.Lock()
         # Built on first submit, when the solver's ordering is known.
         self._encoder: Optional[QpEncoder] = None
         self._plan_cache = None
@@ -764,8 +769,29 @@ class OceanSampler:
             owed, self._unobserved_access_us = self._unobserved_access_us, 0
         return owed
 
+    def use_direct_transport(self, slots: int) -> None:
+        """Send cloud problems through ``slots`` direct SAPI slots; 0 restores the cloud client's threads.
+
+        Takes effect for problems submitted after the call. A transport that
+        is already running keeps its slot count: the sessions behind it hold
+        problems that must finish where they started.
+        """
+        self._sapi_slots = max(0, int(slots))
+        if self._sapi_slots:
+            logger.info("[QPU] direct SAPI transport, %d problems at SAPI at once", self._sapi_slots)
+
+    def _direct_transport(self, solver):
+        with self._direct_lock:
+            if self._direct is None:
+                from quip_solver_dwave.direct_sapi import DirectTransport
+
+                self._direct = DirectTransport(solver.client, slots=self._sapi_slots)
+            return self._direct
+
     def close(self) -> None:
         self._submit_pool.shutdown(wait=False)
+        if self._direct is not None:
+            self._direct.close()
         if self._qpu_solver is not None:
             try:
                 self._qpu_solver.client.close(wait=False)
@@ -839,7 +865,21 @@ class OceanSampler:
         the blast radius of an SDK change is one function: ``Future`` and
         ``Present`` to build the computation, and ``client._submit`` to queue
         it. Everything upstream is our own arrays and our own encoder.
+
+        With ``use_direct_transport`` on, the body goes to a
+        :class:`~quip_solver_dwave.direct_sapi.DirectTransport` slot instead,
+        and the returned problem stands in for the cloud ``Future``.
         """
+        if self._sapi_slots:
+            transport = self._direct_transport(solver)
+            with self._inflight_lock:
+                if cancel_key is not None and cancel_key in self._cancel_pending:
+                    self._cancel_pending.discard(cancel_key)
+                    raise CancelledError("cancelled before SDK submission")
+                problem = transport.submit(body)
+                if cancel_key is not None:
+                    self._register_inflight(cancel_key, problem)
+            return problem
         # Imported here so an offline/mock run never needs the cloud client.
         from dwave.cloud.computation import Future
         from dwave.cloud.concurrency import Present

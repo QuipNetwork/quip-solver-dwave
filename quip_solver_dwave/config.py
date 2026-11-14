@@ -141,3 +141,20 @@ def queue_depth_from_toml(toml_text: str) -> int:
     except Exception:
         return 0
     return _non_negative(data, "queue_depth")
+
+
+def sapi_slots_from_toml(toml_text: str) -> int:
+    """Read ``sapi_slots`` from ``backend_toml``; 0 (the cloud client's own transport) when unset.
+
+    A positive value sends each problem through
+    :class:`quip_solver_dwave.direct_sapi.DirectTransport` with that many
+    problems at SAPI at once; the rest of ``queue_depth`` waits locally, where
+    a Cancel costs nothing. Same lenient parse as :func:`queue_depth_from_toml`.
+    """
+    if not toml_text or not toml_text.strip():
+        return 0
+    try:
+        data = tomllib.loads(toml_text)
+    except Exception:
+        return 0
+    return _non_negative(data, "sapi_slots")

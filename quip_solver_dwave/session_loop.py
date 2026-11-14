@@ -47,6 +47,7 @@ from quip_solver_dwave.budget import (
 from quip_solver_dwave.config import (
     SamplingDefaults,
     queue_depth_from_toml,
+    sapi_slots_from_toml,
     sampling_defaults_from_toml,
 )
 from quip_solver_dwave.families import accepted_family_support
@@ -1637,6 +1638,11 @@ def run_session(  # pyright: ignore[reportGeneralTypeIssues]
                     configured=queue_depth_from_toml(cm.configure.backend_toml),
                 )
                 queue_depth = depth
+                # Only the cloud sampler has a transport to choose; test and
+                # offline samplers share the sample() surface alone.
+                use_direct = getattr(sampler, "use_direct_transport", None)
+                if use_direct is not None:
+                    use_direct(sapi_slots_from_toml(cm.configure.backend_toml))
                 logger.info(
                     "[QPU] pipeline depth %d (coordinator asked for %s)",
                     depth,

@@ -67,6 +67,7 @@ DWAVE_CONFIG_KEYS = frozenset(
         "reversal_s_milli",
         "reversal_pause_us",
         "queue_depth",
+        "sapi_slots",
         "min_throughput_advantage",
         "participation_chance",
         "easy_target_share",

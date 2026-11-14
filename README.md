@@ -112,6 +112,44 @@ queue_depth = 64
 The operator value wins. If unset, the miner uses the depth the coordinator
 sent. If that is also unset, the miner uses 96.
 
+The chip ceiling is lower than the billed access time suggests. The QPU runs
+one problem at a time. Between problems it spends an initialization time that
+D-Wave reports as `qpu_access_overhead_time` and does not bill. D-Wave gives
+between 10 and 20 ms for Advantage systems. At 48 reads of a 160 µs anneal,
+the billed access is 49.9 ms, so the ceiling is between 14.3 and 16.7 problems
+per second. Other users of the QPU lower it further.
+
+### Direct transport to the Solver API
+
+Set `sapi_slots` to send problems through the miner's own connections to the
+D-Wave Solver API (SAPI). The miner then skips the submit, poll, and load
+threads of `dwave-cloud-client`:
+
+```toml
+queue_depth = 96
+sapi_slots = 48
+```
+
+Each slot posts one problem and then waits on `GET problems/<id>/?timeout=30`.
+SAPI answers that request with the samples when the problem finishes.
+`dwave-cloud-client` needs a status poll and then a second request for the
+samples, so the direct transport gets each answer one round trip earlier. It
+reaches the chip ceiling with fewer problems at SAPI: 8 instead of about 24 on
+a fake SAPI with an 80 ms round trip.
+
+At most `sapi_slots` problems are at SAPI. The rest of
+`queue_depth` waits in the miner. A cancel of a waiting problem needs no
+request and costs nothing. A slot posts its next problem the moment its answer arrives, so SAPI holds
+about `sapi_slots` problems, less the problems in transit. On a fake SAPI
+with an 80 ms round trip, 40 slots kept at least 30 to 36 problems at SAPI,
+and 48 slots kept at least 42. Use 48 slots to keep at least 30 problems
+queued or running there with a margin, so that the QPU never waits for the
+miner. On Advantage2 on 2026-11-14, 40 slots kept at least 36 problems at SAPI
+and 48 slots kept at least 43, both at 15 problems per second. The answer to a
+problem took 2.6 s at 40 slots and 3.0 s at 48. Set `queue_depth` higher than `sapi_slots`. SAPI rejects more than
+1,000 problems per member in one solver queue. Leave it unset, or set it to 0,
+to keep the transport of `dwave-cloud-client`.
+
 Depth does not raise jobs per hour under a budget. The budget paces spend
 across the quota period, and it funds fewer jobs per second than even a
 shallow pipeline delivers. Depth sets the burst rate and the duty cycle.
