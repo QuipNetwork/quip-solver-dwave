@@ -75,6 +75,7 @@ from quip_solver_core.session import DEFAULT_NUM_SWEEPS, num_sweeps_from_toml
 from quip_solver_dwave.ocean import OceanSampler, is_solver_offline, is_solver_unavailable
 from quip_solver_dwave.postprocess import (
     OK as TRIAL_OK,
+    PostprocessConfig,
     PostprocessConfigInvalid,
     Postprocessor,
     postprocess_config_from_toml,
@@ -932,7 +933,7 @@ def run_session(
     lease_close_at: Optional[float] = None
     # Set when the session ends without a Shutdown: leases are abandoned.
     leases_aborted = threading.Event()
-    # The family postprocess, when backend_toml configures one.
+    # The family postprocess: the default, or the one backend_toml configures.
     postprocessor: Optional[Postprocessor] = None
 
     def process_job(job, s_nodes, s_edges, s_hash, s_target, s_sweeps, s_defaults):
@@ -1509,6 +1510,7 @@ def run_session(
                             _attach_round_strategy(
                                 gate, refresher, cm.configure.backend_toml, reach
                             )
+                pp_config: Optional[PostprocessConfig] = None
                 try:
                     pp_config = postprocess_config_from_toml(cm.configure.backend_toml)
                     if pp_config is not None:
@@ -1523,20 +1525,25 @@ def run_session(
                             postprocessor.identity,
                         )
                 except (PostprocessConfigInvalid, OSError) as exc:
-                    # Explicit configuration: a postprocess that cannot run
-                    # is not quietly replaced by raw reads.
-                    logger.error("postprocess config: %s", exc)
-                    out_q.put(
-                        miner_pb2.MinerMsg(
-                            fatal=miner_pb2.Fatal(
-                                exit_code=EXIT_CONFIG_INVALID,
-                                reason=f"postprocess config: {exc}",
-                                restart_required=False,
+                    if pp_config is not None and not pp_config.explicit:
+                        # The default asks for nothing the operator set, so a
+                        # host without the processor reports raw reads.
+                        logger.warning("[QPU] no default postprocess: %s", exc)
+                    else:
+                        # Explicit configuration: a postprocess that cannot
+                        # run is not quietly replaced by raw reads.
+                        logger.error("postprocess config: %s", exc)
+                        out_q.put(
+                            miner_pb2.MinerMsg(
+                                fatal=miner_pb2.Fatal(
+                                    exit_code=EXIT_CONFIG_INVALID,
+                                    reason=f"postprocess config: {exc}",
+                                    restart_required=False,
+                                )
                             )
                         )
-                    )
-                    exit_code = EXIT_CONFIG_INVALID
-                    break
+                        exit_code = EXIT_CONFIG_INVALID
+                        break
                 out_q.put(miner_pb2.MinerMsg(ready=miner_pb2.Ready()))
                 # Read straight off the wire, not off SessionConfig: the SDK
                 # substitutes its own default of 3 for an unset field, which

@@ -17,11 +17,16 @@
 //! (short excursions merged cluster by cluster), `race` (a population of
 //! reads raced through `keep:sweeps[:b0]` stages), and `pa` (population
 //! annealing). Exit codes: 0 done, 1 bad input, 2 bookkeeping defect.
+//!
+//! `repair_depth=D` is not in the prototype. It runs the defect repair of
+//! `repair.rs` on the best state of the mode, with chains of up to `D`
+//! flips, and adds a `repair` object to the JSON.
 
 mod cxxsort;
 mod engine;
 mod merger;
 mod model;
+mod repair;
 mod rng;
 
 use std::collections::HashMap;
@@ -213,16 +218,64 @@ fn run(argv: &[String], stdout: &mut String) -> Result<Vec<i8>, Failure> {
     let result = run_mode(&args, mode, &mut r, &mut eng, &seeds, k_states, b0, b1);
     stdout.push_str(&r.out);
     result?;
+    stdout.push(']');
+    if let Some(options) = repair_options(&args)? {
+        let mut st = State::new(&m, &r.best);
+        let stats = repair::repair(&m, &mut st, &options).map_err(Failure::Input)?;
+        let _ = write!(
+            stdout,
+            ",\"repair\":{{\"rounds\":{},\"moves\":{},\"flips\":{},\"gain\":{}}}",
+            stats.rounds,
+            stats.moves,
+            stats.flips,
+            r.best_e - st.e
+        );
+        if st.e < r.best_e {
+            r.best_e = st.e;
+            r.best = st.s;
+        }
+    }
     if m.energy(&r.best) != r.best_e {
         return Err(Failure::Defect("energy bookkeeping mismatch".into()));
     }
     let _ = writeln!(
         stdout,
-        "],\"best\":{},\"cpu\":{:.6}}}",
+        ",\"best\":{},\"cpu\":{:.6}}}",
         r.best_e,
         cpu_now() - r.t0
     );
     Ok(r.best)
+}
+
+/// The defect repair that `repair_depth` asks for, or `None` without it.
+fn repair_options(args: &Args) -> Result<Option<repair::Options>, Failure> {
+    let depth = args.i("repair_depth", 0);
+    if depth == 0 {
+        return Ok(None);
+    }
+    if args.s("mask").is_some() {
+        return Err(Failure::Input("repair_depth cannot run with a mask".into()));
+    }
+    let depth = usize::try_from(depth)
+        .ok()
+        .filter(|&d| d <= repair::MAX_DEPTH)
+        .ok_or_else(|| {
+            Failure::Input(format!("repair_depth must be 1 to {}", repair::MAX_DEPTH))
+        })?;
+    let positive = |key: &str, dflt: i64| {
+        u32::try_from(args.i(key, dflt))
+            .ok()
+            .filter(|&v| v > 0)
+            .ok_or_else(|| Failure::Input(format!("{key} must be a positive integer")))
+    };
+    let tau = i32::try_from(args.i("repair_tau", 8500))
+        .map_err(|_| Failure::Input("repair_tau out of range".into()))?;
+    Ok(Some(repair::Options {
+        depth,
+        budget: positive("repair_budget", 16384)?,
+        tau,
+        max_rounds: positive("repair_rounds", 64)?,
+    }))
 }
 
 #[allow(clippy::too_many_arguments)] // reason: one mode dispatcher over the run's shared state
