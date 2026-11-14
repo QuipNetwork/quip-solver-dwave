@@ -119,13 +119,33 @@ class PostprocessConfig:
     policies: Dict[str, Policy]
     #: ``True`` when a ``[postprocess]`` table asked for this configuration.
     explicit: bool = True
+    #: Most salts queued or running at once. A salt past the limit reports
+    #: raw reads. ``None`` sets no limit.
+    max_pending: Optional[int] = None
+
+
+def usable_processors() -> int:
+    """Processors this process may run on: its affinity, which a container cpuset limits."""
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:  # not Linux
+        return os.cpu_count() or 1
 
 
 def default_postprocess_config() -> PostprocessConfig:
-    """The default policies, no trial records, and all processors but one."""
-    threads = min(DEFAULT_MAX_THREADS, max(1, (os.cpu_count() or 2) - 1))
+    """The default policies, no trial records, all usable processors but one, and a short queue.
+
+    The queue limit keeps the postprocess from delaying results: when the
+    host cannot keep up with the QPU, the salts past the limit report their
+    raw reads at once.
+    """
+    threads = min(DEFAULT_MAX_THREADS, max(1, usable_processors() - 1))
     return PostprocessConfig(
-        records=None, threads=threads, policies=dict(DEFAULT_POLICIES), explicit=False
+        records=None,
+        threads=threads,
+        policies=dict(DEFAULT_POLICIES),
+        explicit=False,
+        max_pending=2 * threads,
     )
 
 
@@ -339,9 +359,37 @@ class Postprocessor:
         self.executor = ThreadPoolExecutor(
             max_workers=config.threads, thread_name_prefix="dwave-postprocess"
         )
+        self._lock = threading.Lock()
+        self._pending = 0
+        #: Salts that reported raw reads because the queue was full.
+        self.skipped = 0
 
-    def submit(self, fn: Callable[..., None], *args: Any) -> "Future[None]":
-        return self.executor.submit(fn, *args)
+    def submit(self, fn: Callable[..., None], *args: Any) -> "Optional[Future[None]]":
+        """Queue the host work of one salt, or return ``None`` when the queue is full."""
+        limit = self.config.max_pending
+        with self._lock:
+            if limit is not None and self._pending >= limit:
+                self.skipped += 1
+                if self.skipped == 1 or self.skipped % 1000 == 0:
+                    logger.info(
+                        "[QPU] postprocess queue full (%d pending): %d salts so far "
+                        "reported raw reads alone",
+                        self._pending,
+                        self.skipped,
+                    )
+                return None
+            self._pending += 1
+        try:
+            future = self.executor.submit(fn, *args)
+        except BaseException:
+            self._release()
+            raise
+        future.add_done_callback(lambda _f: self._release())
+        return future
+
+    def _release(self) -> None:
+        with self._lock:
+            self._pending -= 1
 
     def close(self) -> None:
         self.executor.shutdown(wait=True)
