@@ -49,6 +49,7 @@ from quip_solver_dwave.config import (
     queue_depth_from_toml,
     programming_thermalization_us_from_toml,
     sapi_slots_from_toml,
+    solver_choice_from_toml,
     tile_mode_from_toml,
     tile_passes_from_toml,
     sampling_defaults_from_toml,
@@ -1537,6 +1538,11 @@ def run_session(  # pyright: ignore[reportGeneralTypeIssues]
                 config = session_sdk.session_config_from_configure(
                     miner_id, cm.configure
                 )
+                # The coordinator names the solver and region in backend_toml,
+                # so it must reach the sampler before the connect below.
+                use_solver = getattr(sampler, "use_solver", None)
+                if use_solver is not None:
+                    use_solver(*solver_choice_from_toml(cm.configure.backend_toml))
                 # The coordinator has engaged us: connect to the QPU now (a
                 # no-op in mock mode / when already connected).
                 solver_down = not _connect_solver(sampler, None)

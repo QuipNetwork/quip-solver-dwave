@@ -176,6 +176,26 @@ def sapi_slots_from_toml(toml_text: str) -> int:
     return _non_negative(data, "sapi_slots")
 
 
+def solver_choice_from_toml(toml_text: str) -> "tuple[Optional[str], Optional[str]]":
+    """``(solver, region)`` from ``backend_toml``; None for each key it does not set.
+
+    A coordinator picks the Advantage2 of each miner here, for example
+    ``solver = "Advantage2_system4"`` with ``region = "na-east-1"``. An unset
+    key leaves the choice to the SDK (``DWAVE_API_SOLVER``,
+    ``DWAVE_API_REGION``, ``dwave.conf``). A value that is not a non-empty
+    string is warned about and ignored.
+    """
+    data = _backend_table(toml_text)
+    chosen = []
+    for key in ("solver", "region"):
+        value = data.get(key)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            logger.warning("%s must be a solver or region name, got %r; ignoring it", key, value)
+            value = None
+        chosen.append(value.strip() if isinstance(value, str) else None)
+    return chosen[0], chosen[1]
+
+
 def tile_passes_from_toml(toml_text: str) -> int:
     """Read ``tile_passes`` from ``backend_toml``; :data:`DEFAULT_TILE_PASSES` when unset or 0.
 

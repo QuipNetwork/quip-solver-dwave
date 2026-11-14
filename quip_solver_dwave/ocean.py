@@ -426,6 +426,28 @@ class OceanSampler:
         self._connected = True
         self._apply_native_hash()
 
+    def use_solver(self, solver: Optional[str], region: Optional[str]) -> None:
+        """Choose the solver and region of the next connect; None keeps the current choice.
+
+        The coordinator sends this in ``Configure.backend_toml``, before the
+        miner connects, so one coordinator config can pick any Advantage2. A
+        connected sampler keeps its solver: the live graph, the topology fit
+        and the tile cuts all belong to it, so a different choice is logged
+        and not applied.
+        """
+        wanted = (solver or self._solver_name, region or self._region)
+        if self._connected:
+            if wanted != (self._solver_name, self._region):
+                logger.warning(
+                    "[QPU] already connected; solver=%s region=%s applies to the next session",
+                    wanted[0],
+                    wanted[1],
+                )
+            return
+        self._solver_name, self._region = wanted
+        if solver or region:
+            logger.info("[QPU] solver=%s region=%s from the coordinator", wanted[0], wanted[1] or "default")
+
     def _apply_native_hash(self) -> None:
         if self._live_nodes and self._live_edges is not None:
             self._native_hash = native_topology_hash(self._live_nodes, self._live_edges)

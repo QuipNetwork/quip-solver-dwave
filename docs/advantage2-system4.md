@@ -15,24 +15,31 @@ above the gate.
 
 ## Run it
 
-Point the Ocean SDK at the chip. The two variables override `dwave.conf`:
-
-```sh
-DWAVE_API_SOLVER=Advantage2_system4 DWAVE_API_REGION=na-east-1 quip-dwave-qa --quip-coordinator unix:///run/quip/coord.sock
-```
-
-The miner detects the smaller chip when the session Topology arrives and logs
-`session topology (4560 nodes) is larger than this Z(6,4) chip`. Two
-`backend_toml` keys control the work for each job:
+Name the solver in the `[dwave]` section of the coordinator config. The
+coordinator sends the section to the miner as `backend_toml`, and the miner
+reads it before it connects:
 
 ```toml
-tile_mode = "batch-seam"   # default "sequential"
-tile_passes = 1            # default 2
+[dwave]
+solver = "Advantage2_system4"   # or "Advantage2_system1"
+region = "na-east-1"            # system1 is in "na-west-1"
+tile_mode = "batch-seam"        # default "sequential"
+tile_passes = 1                 # default 2
 ```
 
-`batch-seam` with one pass is the measured best setting. Every other setting
-(budget, reads, anneal time, postprocess) works as on system1. The budget
-ledger bills the access time of every patch call.
+Without `solver` and `region`, the SDK chooses from `DWAVE_API_SOLVER`,
+`DWAVE_API_REGION`, and `dwave.conf`. A miner keeps the solver it connected
+to for the whole session.
+
+On system4 the miner logs `session topology (4560 nodes) is larger than this
+Z(6,4) chip` when the Topology arrives. `batch-seam` with one pass is the
+measured best setting. Every other setting (budget, reads, anneal time,
+postprocess) works as on system1. The budget ledger bills the access time of
+every patch call.
+
+The coordinator launches one D-Wave miner, from `[dwave]`, for each config.
+Two Advantage2 chips at once need two coordinators, or a change in
+`quip-solver` that accepts indexed `[dwave.N]` sections as `[cuda.N]` does.
 
 ## What the network sends
 

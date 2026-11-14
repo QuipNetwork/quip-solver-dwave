@@ -76,6 +76,8 @@ DWAVE_CONFIG_KEYS = frozenset(
         "records_max_gb",
         "tile_passes",
         "tile_mode",
+        "solver",
+        "region",
     }
 )
 

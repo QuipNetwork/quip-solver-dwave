@@ -234,6 +234,11 @@ config, then a built-in default:
   off the wire, not off `SessionConfig`, which substitutes the SDK's own default
   for an unset field.
 
+- solver choice (`config.solver_choice_from_toml`): `solver` and `region` in
+  `backend_toml`, then the sampler's constructor, then the SDK's
+  `DWAVE_API_*` and `dwave.conf`. The session hands the choice to the sampler
+  before `_connect_solver`, and a connected sampler keeps its solver.
+
 Operator settings arrive in `Configure.backend_toml`; `budget.DWAVE_CONFIG_KEYS`
 is the accepted set. Anything else gets warned about.
 
