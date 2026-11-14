@@ -127,9 +127,9 @@ alone. Confidence label: measured, 17 instances.
 
 ### Next
 
-**C. Patch loop from the batch-seam state.** Measured on qblocks 366 to 371
-for 2.48 s of access. Each instance ran batch-seam and the race, then eight
-patch calls. Each call re-annealed one core or seam placement at random with
+**C. Patch loop from the batch-seam state.** This run used qblocks 366 to 371
+and 2.48 s of access. Each instance started from batch-seam and the race.
+Eight patch calls followed. Each call re-annealed one core or seam placement at random with
 the rest held, and raced the 48 swapped-in reads at 768 sweeps. A lower result
 replaced the state.
 
