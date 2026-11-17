@@ -247,14 +247,26 @@ def test_the_exact_mock_answers_a_seeded_job_too_large_to_enumerate():
     assert ss.info["timing"]["qpu_sampling_time"] >= 1
 
 
-def test_a_warm_start_reaches_the_mock_as_a_state_mapping():
+def test_a_warm_start_reaches_the_mock_as_a_state_mapping(monkeypatch):
+    seen = []
+    real = MockSampler.sample_ising
+
+    def spy(self, h, j, **kwargs):
+        seen.append(kwargs.get("initial_state"))
+        return real(self, h, j, **kwargs)
+
+    monkeypatch.setattr(MockSampler, "sample_ising", spy)
     s = OceanSampler(mock=True)
+    # Not the ground state. Seeded with the ground state, the warm and the
+    # cold answer were the same, and the test passed without a warm start.
     warm = WarmStart(
-        state=np.array([-1, 1], dtype=np.int8), reversal_s=0.5, reversal_pause_us=25
+        state=np.array([1, 1], dtype=np.int8), reversal_s=0.5, reversal_pause_us=25
     )
     # h = [1, -1], J = 0.5: the ground state is [-1, +1] at energy -2.5.
     result = _submit(s, warm_start=warm)
 
+    assert seen == [{0: 1, 1: 1}]
+    # Descent from the seed reaches the ground state.
     assert result.energies == [-2.5]
     assert result.num_reads == 4
     s.close()

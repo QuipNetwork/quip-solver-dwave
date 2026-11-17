@@ -6,6 +6,8 @@ the QPU does not have makes SAPI reject the entire problem with
 ProblemStructureError, so every job fails.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("numpy")
@@ -66,47 +68,43 @@ def test_no_defects_is_still_a_pass_through():
     assert (h_r, j_r, info) == (h, j, None)
 
 
-class _Recorder:
-    """Stands in for a QPU: records the problem it is handed, returns one read."""
-
-    def __init__(self):
-        self.submitted = []
-
-    def sample_ising(self, h, j, **kwargs):
-        import dimod
-
-        self.submitted.append((dict(h), dict(j)))
-        variables = sorted({v for e in j for v in e} | set(h))
-        return dimod.SampleSet.from_samples(
-            [{v: 1 for v in variables}], vartype="SPIN", energy=[0.0]
-        )
-
-
-def test_sample_submits_only_couplers_the_chip_has():
+def test_sample_submits_only_couplers_the_chip_has(monkeypatch):
     """The regression: with every qubit present and one coupler missing, the
-    submitted problem must not carry the missing coupler."""
+    problem handed to the encoder must not carry the missing coupler."""
+    import numpy as np
+
     from quip_solver_dwave.ocean import OceanSampler
 
-    rec = _Recorder()
-    s = OceanSampler(sampler=rec, mock=False)
+    s = OceanSampler(mock=False)
     s._live_nodes = [0, 1, 2]
     s._live_edges = [(0, 1)]
     s.set_session_topology([0, 1, 2], [(0, 1), (1, 2)])
-    assert s._defective_qubits == []
-    assert s._defective_edges == {(1, 2)}
+    submitted = []
 
-    import numpy as np
+    def submit_sync(nodes, h, edges, j, *rest):
+        # The last step before the encoder and SAPI. The answer is one read
+        # of the reduced problem, shaped like the SDK's future.
+        submitted.append(([tuple(e) for e in np.asarray(edges).tolist()], np.asarray(j).tolist()))
+        return SimpleNamespace(
+            samples=np.array([[1, -1, 1]], dtype=np.int8),
+            variables=[0, 1, 2],
+            energies=[-1.0],
+            num_occurrences=[1],
+            timing={"qpu_programming_time": 1_000, "qpu_sampling_time": 100},
+        )
 
-    nodes, h, edges, j, info = s._clamp_defects(
+    monkeypatch.setattr(s, "_submit_sync", submit_sync)
+    result = s.sample(
         np.array([0, 1, 2]),
         np.array([1.0, 0.0, -1.0]),
         np.array([(0, 1), (1, 2)]),
         np.array([1.0, -1.0]),
-        b"\x07",
+        nonce_seed=b"\x07",
     )
+    s.close()
 
     # (1, 2) is not on the chip. Submitting it makes SAPI reject the whole
-    # problem, so it must be gone from what the encoder will see.
-    assert [tuple(e) for e in edges.tolist()] == [(0, 1)]
-    assert j.tolist() == [1.0]
-    assert info is not None and info.removed_edges == {(1, 2): -1.0}
+    # problem, so it must be gone from what the encoder sees.
+    assert submitted == [([(0, 1)], [1.0])]
+    # The removed coupler is scored back: -1.0 + J(1,2) * s1 * s2 = 0.0.
+    assert result.energies == pytest.approx([0.0])
