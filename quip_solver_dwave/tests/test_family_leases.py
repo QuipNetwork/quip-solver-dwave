@@ -425,6 +425,32 @@ class Coordinator:
             return list(self.sent)
 
 
+def capture_lease_hooks(monkeypatch) -> queue.Queue[leases.LeaseHooks]:
+    """The hooks of each lease the session runs, in admission order.
+
+    A test that releases a held salt after a stop must first wait until the
+    lease can see that stop through its hooks. Released earlier, the lease
+    can finish before the session reads the stop, and under a loaded suite
+    it sometimes did.
+    """
+    captured: queue.Queue[leases.LeaseHooks] = queue.Queue()
+    real_run_lease = session_loop.run_lease
+
+    def capture(admitted, hooks, **kwargs):
+        captured.put(hooks)
+        return real_run_lease(admitted, hooks, **kwargs)
+
+    monkeypatch.setattr(session_loop, "run_lease", capture)
+    return captured
+
+
+def wait_until(condition: Callable[[], bool], timeout: float = 10) -> bool:
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    return condition()
+
+
 def has_done(job_id: bytes = b"lease-1") -> Callable[[List[miner_pb2.MinerMsg]], bool]:
     return lambda sent: any(m.WhichOneof("msg") == "lease_done" and m.lease_done.job_id == job_id for m in sent)
 
@@ -603,14 +629,16 @@ def test_a_passed_deadline_closes_the_lease_like_a_cancel(monkeypatch):
 
 
 def test_shutdown_stops_the_draw_and_keeps_a_salt_that_finishes_in_the_window(monkeypatch):
+    captured = capture_lease_hooks(monkeypatch)
     device = FakeDevice(hold={1})
     coord = Coordinator(monkeypatch, device)
     ring = ring_topology()
     coord.start(ring, target(), depth=1)
     coord.send(job=lease_job(generator(ring, count=6)))
     assert device.entered[1].wait(timeout=10)
+    hooks = captured.get(timeout=10)
     coord.send(shutdown=miner_pb2.Shutdown(grace_ms=2000))
-    time.sleep(0.2)
+    assert wait_until(lambda: hooks.close_at() is not None)
     device.release[1].set()
     coord.thread.join(timeout=15)
     with coord.cond:
@@ -621,13 +649,16 @@ def test_shutdown_stops_the_draw_and_keeps_a_salt_that_finishes_in_the_window(mo
 
 
 def test_a_stream_that_closes_abandons_the_lease_without_a_lease_done(monkeypatch):
+    captured = capture_lease_hooks(monkeypatch)
     device = FakeDevice(hold={0})
     coord = Coordinator(monkeypatch, device)
     ring = ring_topology()
     coord.start(ring, target(), depth=1)
     coord.send(job=lease_job(generator(ring, count=3)))
     assert device.entered[0].wait(timeout=10)
+    hooks = captured.get(timeout=10)
     coord.inbox.put(None)
+    assert wait_until(hooks.aborted)
     device.release[0].set()
     coord.thread.join(timeout=15)
     with coord.cond:
