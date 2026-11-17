@@ -22,77 +22,54 @@ have to know about to keep the loop responsive.
 from __future__ import annotations
 
 import threading
-import time
 
-from quip_solver_dwave.budget import BudgetConfig, BudgetPacer
+from quip_solver_core import miner_pb2
+
+from quip_solver_dwave import budget
+from quip_solver_dwave.tests.test_cancel_accounting import (
+    JOB_GENERATION,
+    BlockingSampler,
+    _job,
+)
+from quip_solver_dwave.tests.test_family_leases import Coordinator, target
 from quip_solver_dwave.usage import UsageLedger
 
 
-class SlowLedger(UsageLedger):
-    """A ledger whose commit is as slow as a network volume's fsync."""
-
-    def __init__(self, delay_s: float):
-        super().__init__(":memory:")
-        self._delay = delay_s
-
-    def record(self, access_time_us, *, now=None):
-        # Inside the ledger's own lock, where a real fsync stalls.
-        with self._lock:
-            time.sleep(self._delay)
-        super().record(access_time_us, now=now)
-
-
-def _dispatch_latency_under_billing(bill_under_state_lock: bool) -> float:
-    """How long a dispatch waits while exactly one result is billed.
-
-    Models the two lock users in session_loop: a worker thread billing a
-    result and the session-loop thread deciding whether a job may be sampled.
-    Both take ``state_lock``; only one of them needs to. One billing, one
-    measurement, no spinning, so the number means the same thing every run.
-    """
-    ledger = SlowLedger(delay_s=0.05)
-    pacer = BudgetPacer(BudgetConfig(3000.0, 9), ledger)
-    now = time.time()
-    state_lock = threading.Lock()
+def test_a_cancel_is_answered_while_a_worker_is_billing(monkeypatch, tmp_path):
+    # The worker's billing write is held open. A session that billed under
+    # state_lock would answer the Cancel only after the write, because the
+    # Cancel handler takes state_lock to raise the watermark.
     billing = threading.Event()
+    written = threading.Event()
 
-    def worker():
-        if bill_under_state_lock:
-            with state_lock:  # what the code did before the fix
-                billing.set()
-                pacer.record_access_time(43_200, now)
-        else:
+    class HeldLedger(UsageLedger):
+        def record(self, access_time_us, *, now=None):
             billing.set()
-            pacer.record_access_time(43_200, now)
-            with state_lock:  # bookkeeping only, no IO
-                pass
+            assert written.wait(timeout=30)
+            super().record(access_time_us, now=now)
 
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
-    assert billing.wait(timeout=2), "worker never started billing"
-    time.sleep(0.005)  # let the 50 ms write get under way
+    monkeypatch.setattr(budget, "UsageLedger", HeldLedger)
+    sampler = BlockingSampler()
+    sampler.release.set()
+    coord = Coordinator(monkeypatch, sampler)
+    topology = miner_pb2.Topology(nodes=[0, 1], edges=miner_pb2.EdgeList(u=[0], v=[1]), hash=b"")
+    toml = f'budget = "3000s"\nusage_db = "{tmp_path / "usage.db"}"\n'
+    coord.start(topology, target(), depth=3, toml=toml)
+    # A boundary the gate can join on, so the job is not refused on budget.
+    coord.send(cancel=miner_pb2.Cancel(max_generation=1))
+    coord.inbox.put(_job())
+    assert billing.wait(timeout=10), "the job was never billed"
 
-    t0 = time.perf_counter()
-    with state_lock:  # what the session loop does per dispatched job
-        pass
-    waited = time.perf_counter() - t0
-    t.join(timeout=2)
-    return waited
-
-
-def test_billing_under_the_dispatch_lock_stalls_the_session_loop():
-    # Characterises the bug so the fix below has something to be better than.
-    waited = _dispatch_latency_under_billing(bill_under_state_lock=True)
-    assert waited > 0.02, (
-        "expected dispatch to wait out the 50 ms write when billing holds the "
-        f"same lock; it waited {waited * 1000:.1f} ms"
-    )
-
-
-def test_billing_outside_the_dispatch_lock_leaves_it_free():
-    # The fix: the ledger has its own lock, so state_lock never needs to be
-    # held across its IO.
-    waited = _dispatch_latency_under_billing(bill_under_state_lock=False)
-    assert waited < 0.01, (
-        f"dispatch still blocked {waited * 1000:.1f} ms behind billing"
-    )
+    watermark = JOB_GENERATION + 1
+    coord.send(cancel=miner_pb2.Cancel(max_generation=watermark))
+    try:
+        coord.wait_for(
+            lambda sent: any(
+                m.WhichOneof("msg") == "status" and m.status.abandoned_generation == watermark
+                for m in sent
+            ),
+            timeout=5,
+        )
+    finally:
+        written.set()
+    coord.finish()

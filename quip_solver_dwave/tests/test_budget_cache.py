@@ -14,7 +14,6 @@ sharing the same usage_db. The ledger stays the source of truth.
 from __future__ import annotations
 
 import threading
-import time
 from datetime import datetime, timezone
 
 from quip_solver_dwave.budget import BudgetConfig, BudgetPacer, period_bounds
@@ -131,17 +130,19 @@ def test_decisions_stay_consistent_while_workers_bill():
     pacer, _ = _pacer()
     pacer.decide(MID_PERIOD)
     stop = threading.Event()
-    billed = [0]
+    # Set by the first bill: readings taken before any worker ran would all
+    # be 0 and sorted, and the test would pass without any concurrency.
+    billing = threading.Event()
 
     def worker():
         while not stop.is_set():
             pacer.record_access_time(1_000, MID_PERIOD)
-            billed[0] += 1
+            billing.set()
 
     threads = [threading.Thread(target=worker, daemon=True) for _ in range(8)]
     for t in threads:
         t.start()
-    time.sleep(0.05)
+    assert billing.wait(timeout=10)
     readings = [pacer.decide(MID_PERIOD).spent_us for _ in range(200)]
     stop.set()
     for t in threads:

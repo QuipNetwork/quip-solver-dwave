@@ -285,7 +285,10 @@ def test_set_target_num_reads_override_is_honored():
         session_edges=[(0, 1)],
         session_target=target,
     )
-    assert any(m.HasField("result") for m in msgs)
+    (result,) = [m.result for m in msgs if m.HasField("result")]
+    # 3 is below the 4 states the exact mock can return for two spins, so a
+    # read count from anywhere else shows up here.
+    assert result.meta.reads == 3
     sampler.close()
 
 

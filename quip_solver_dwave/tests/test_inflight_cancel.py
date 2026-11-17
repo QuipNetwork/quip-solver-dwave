@@ -7,6 +7,7 @@ reaches.
 
 from __future__ import annotations
 
+import sys
 import threading
 
 from quip_solver_dwave.session_loop import CancelTally, InflightJobs
@@ -61,27 +62,45 @@ def test_tracking_survives_workers_finishing_during_a_cancel_sweep():
     # Jobs are added and released on pool threads while the session thread
     # sweeps for a Cancel, so the map is crossed by both by construction.
     inflight = InflightJobs()
-    keys = [bytes([i]) for i in range(100)]
+    keys = [i.to_bytes(4, "little") for i in range(5_000)]
     for k in keys:
         inflight.add(k, 5)
     start = threading.Barrier(2)
+    # An exception on a worker thread only warns under pytest, so each thread
+    # records its own. A sweep that iterates the map while a release shrinks
+    # it raises RuntimeError there, and the test must see that.
+    errors: list[BaseException] = []
 
     def release():
         start.wait()
-        for k in keys:
-            inflight.release(k)
+        try:
+            for k in keys:
+                inflight.release(k)
+        except BaseException as exc:  # noqa: BLE001 - reported below
+            errors.append(exc)
 
     def sweep():
         start.wait()
-        for _ in range(50):
-            inflight.abandoned(7)
+        try:
+            for _ in range(50):
+                inflight.abandoned(7)
+        except BaseException as exc:  # noqa: BLE001 - reported below
+            errors.append(exc)
 
-    threads = [threading.Thread(target=release), threading.Thread(target=sweep)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    # One sweep fits inside the default 5 ms switch interval, so the threads
+    # would never interleave inside it. A short interval makes them.
+    interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        threads = [threading.Thread(target=release), threading.Thread(target=sweep)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+    finally:
+        sys.setswitchinterval(interval)
 
+    assert errors == []
     assert inflight.abandoned(7) == []
 
 

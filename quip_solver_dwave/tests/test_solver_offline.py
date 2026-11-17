@@ -321,7 +321,6 @@ def test_any_other_connect_error_is_still_fatal(monkeypatch, usage_db):
     def script(sent):
         yield miner_pb2.CoordMsg(welcome=miner_pb2.Welcome(protocol_version=2))
         yield _configure(usage_db)
-        time.sleep(0.2)
         yield miner_pb2.CoordMsg(shutdown=miner_pb2.Shutdown(grace_ms=100))
 
     codes: List[int] = []

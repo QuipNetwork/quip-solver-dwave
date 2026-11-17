@@ -48,7 +48,8 @@ from quip_solver_dwave.usage import UsageLedger
 FAKE_QPP = """#!{python}
 # A stand-in for quip-dwave-qpp. FAKE_QPP_MODE picks the behaviour:
 # first (report seed 0 with its true energy), lie (report a wrong energy),
-# fail (exit 1), hang (never finish).
+# fail (exit 1), hang (never finish). A hang writes its pid to
+# FAKE_QPP_STARTED, when set, so a test can stop it once it runs.
 import json, os, sys, time
 import numpy as np
 model, seeds, out, mode = sys.argv[1:5]
@@ -56,6 +57,10 @@ how = os.environ.get("FAKE_QPP_MODE", "first")
 if how == "fail":
     sys.stderr.write("bad stages\\n"); sys.exit(1)
 if how == "hang":
+    started = os.environ.get("FAKE_QPP_STARTED")
+    if started:
+        open(started + ".tmp", "w").write(str(os.getpid()))
+        os.replace(started + ".tmp", started)
     time.sleep(60)
 raw = open(model, "rb").read()
 n, t, p, e = np.frombuffer(raw[:16], dtype="<i4")
@@ -330,15 +335,22 @@ def test_a_failed_processor_is_a_failed_trial_with_its_raw_reads(tmp_path, fake_
 
 
 def test_a_stop_kills_the_processor_and_leaves_an_incomplete_trial(tmp_path, fake_qpp, monkeypatch):
+    # The stop fires once the processor runs. A stop on a wall-clock
+    # deadline could fire before the child started, and the test then
+    # passed without killing anything.
+    started = tmp_path / "started"
     monkeypatch.setenv("FAKE_QPP_MODE", "hang")
+    monkeypatch.setenv("FAKE_QPP_STARTED", str(started))
     config = postprocess_config_from_toml(config_toml(tmp_path))
     assert config is not None
     processor = Postprocessor(config, store=_store(tmp_path))
     problem = _salt()
-    deadline = time.monotonic() + 0.3
-    started = time.monotonic()
-    trial = _run(processor, problem, _reads(problem), stop=lambda: time.monotonic() > deadline)
-    assert time.monotonic() - started < 5
+    began = time.monotonic()
+    trial = _run(processor, problem, _reads(problem), stop=started.exists)
+    # Far below the 60 s hang: a processor that outlived its stop fails here.
+    assert time.monotonic() - began < 30
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(started.read_text()), 0)
     assert trial.outcome == INCOMPLETE
     assert (_record(processor, trial)["raw_spins"].shape[0]) == 4
 

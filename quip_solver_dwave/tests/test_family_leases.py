@@ -349,7 +349,7 @@ class FakeDevice:
 class Coordinator:
     """A scripted coordinator: the test sends messages and waits on replies."""
 
-    def __init__(self, monkeypatch, device: FakeDevice):
+    def __init__(self, monkeypatch, device: object):
         self.inbox: "queue.Queue[Optional[miner_pb2.CoordMsg]]" = queue.Queue()
         self.sent: List[miner_pb2.MinerMsg] = []
         self.cond = threading.Condition()
@@ -613,13 +613,20 @@ def test_a_cancel_closes_the_lease_at_once_and_bills_the_late_salt(monkeypatch, 
 
 
 def test_a_passed_deadline_closes_the_lease_like_a_cancel(monkeypatch):
+    # The lease reads its deadline through leases.now_unix_ms. The test moves
+    # that clock past the deadline once salt 1 is on the device. A real
+    # deadline a little ahead made the test depend on how fast salt 0 ran.
+    skew_ms = [0]
+    real_now = leases.now_unix_ms
+    monkeypatch.setattr(leases, "now_unix_ms", lambda: real_now() + skew_ms[0])
     device = FakeDevice(hold={1})
     coord = Coordinator(monkeypatch, device)
     ring = ring_topology()
     coord.start(ring, target(), depth=1)
-    deadline = int(time.time() * 1000) + 1500
+    deadline = int(time.time() * 1000) + 60_000
     coord.send(job=lease_job(generator(ring, count=6), deadline_ms=deadline))
     assert device.entered[1].wait(timeout=10)
+    skew_ms[0] = 120_000
     coord.wait_for(has_done(), timeout=10)
     device.release[1].set()
     sent = coord.finish()
@@ -667,12 +674,22 @@ def test_a_stream_that_closes_abandons_the_lease_without_a_lease_done(monkeypatc
 
 
 def test_salts_in_flight_never_exceed_the_pipeline_depth(monkeypatch):
-    device = FakeDevice()
+    # Every salt waits on the device, so the salts pile up unless the session
+    # limits them. A device that answered at once kept at most one salt in
+    # flight, and the bound held with no limiter at all.
+    device = FakeDevice(hold=set(range(8)))
     coord = Coordinator(monkeypatch, device)
     ring = ring_topology()
     coord.start(ring, target(), depth=2)
     coord.send(job=lease_job(generator(ring, count=8), job_id=b"lease-1"))
     coord.send(job=lease_job(generator(ring, count=8), job_id=b"lease-2"))
+    assert wait_until(lambda: device.active >= 2)
+    # Time for a missing limit to admit a third salt. A slow host can only
+    # hide a defect here; it cannot fail a correct session.
+    time.sleep(0.2)
+    assert device.active == 2
+    for release in device.release.values():
+        release.set()
     coord.wait_for(lambda sent: has_done(b"lease-1")(sent) and has_done(b"lease-2")(sent))
     sent = coord.finish()
     assert device.max_active <= 2
